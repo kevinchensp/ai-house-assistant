@@ -140,6 +140,15 @@ const LOCATION_DICTIONARY: LocationDictionaryEntry[] = [
     center: { lng: 113.29748, lat: 23.222149 },
     aliases: ["天瑞广场", "白云天瑞广场"],
     confidence: 0.82
+  },
+  {
+    normalized: "石井",
+    city: "广州",
+    district: "白云区",
+    placeType: "business_area",
+    center: { lng: 113.2558, lat: 23.2036 },
+    aliases: ["白云石井", "石井", "石井街道"],
+    confidence: 0.84
   }
 ];
 

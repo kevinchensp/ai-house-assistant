@@ -63,4 +63,31 @@ describe("assistant", () => {
     });
     expect(response.salesReply.text).toContain("东平附近暂时没看到完全匹配");
   });
+
+  it("treats one-bedroom phrasing as enough layout information to search", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          calls.push(args);
+          return [];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s1",
+      message: "帮我找白云石井800左右的一居室"
+    });
+
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.requirement.layout.bedroom).toBe(1);
+    expect(response.requirement.layout.livingRoom).toBe(0);
+    expect(calls[0]).toMatchObject({
+      keyword: "石井",
+      bedroom: 1,
+      livingRoom: 0
+    });
+  });
 });

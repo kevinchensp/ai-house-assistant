@@ -113,19 +113,21 @@ export function createAssistant(dependencies: AssistantDependencies) {
 }
 
 function extractRequirement(message: string): RequirementExtraction {
-  const location = message.match(/东平|白云大道北|天瑞广场|白云/) ? resolveLocation(message) : null;
+  const location = message.match(/东平|白云大道北|天瑞广场|石井|白云/) ? resolveLocation(message) : null;
   const budget = parseBudgetAround(message);
+  const bedroom = extractBedroom(message);
+  const livingRoom = extractLivingRoom(message);
   const layout = {
-    bedroom: message.includes("一室") || message.includes("1室") ? 1 : null,
-    livingRoom: message.includes("一厅") || message.includes("1厅") ? 1 : null,
+    bedroom,
+    livingRoom,
     toilet: null,
-    confidence: message.includes("一室") || message.includes("1室") ? 0.95 : 0.3
+    confidence: bedroom !== null ? 0.9 : 0.3
   };
 
   const missingRequiredSlots: string[] = [];
   if (!location || location.confidence < 0.5) missingRequiredSlots.push("location");
   if (!budget) missingRequiredSlots.push("budget");
-  if (layout.bedroom === null || layout.livingRoom === null) missingRequiredSlots.push("layout");
+  if (layout.bedroom === null) missingRequiredSlots.push("layout");
 
   return validateRequirementExtraction({
     location,
@@ -142,6 +144,32 @@ function extractRequirement(message: string): RequirementExtraction {
     followUpQuestion:
       missingRequiredSlots.length > 0 ? "请问客户主要想看哪个区域、预算大概多少，以及户型要求是什么？" : null
   });
+}
+
+function extractBedroom(message: string): number | null {
+  if (/一居室|一房|一室|1室|1房|单间/.test(message)) {
+    return 1;
+  }
+  if (/两居室|两房|二室|2室|2房/.test(message)) {
+    return 2;
+  }
+  if (/三居室|三房|三室|3室|3房/.test(message)) {
+    return 3;
+  }
+  return null;
+}
+
+function extractLivingRoom(message: string): number | null {
+  if (/一厅|1厅/.test(message)) {
+    return 1;
+  }
+  if (/两厅|二厅|2厅/.test(message)) {
+    return 2;
+  }
+  if (/单间|一居室|一房/.test(message)) {
+    return 0;
+  }
+  return null;
 }
 
 async function searchWithFallbacks(

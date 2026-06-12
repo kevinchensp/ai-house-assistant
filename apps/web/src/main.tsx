@@ -63,6 +63,7 @@ function App() {
       text: trimmedMessage
     };
     setMessages((current) => [...current, userMessage]);
+    setMessage("");
     setIsLoading(true);
     setCopied(false);
     try {
