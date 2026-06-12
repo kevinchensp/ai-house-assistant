@@ -28,7 +28,7 @@ MVP 核心闭环：
 - [x] 设计会话数据结构：session、message、recommendation、feedback。
 - [x] 实现 MCP Client，支持 HTTP JSON-RPC 调用。
 - [ ] 接入现有 MCP 工具：`search_houses`、`search_buildings`、`get_house_type_summary`。
-- [ ] 接入真实国内模型或公司模型网关，实现生产版 `LLMProvider`。
+- [x] 接入真实国内模型或公司模型网关，实现生产版 `LLMProvider`。
 - [ ] 修复或规避 `get_house_detail` 依赖 `house_images` 表导致失败的问题。
 - [ ] 确认楼栋表是否稳定提供 `lng` 和 `lat`。
 - [x] 建立最小位置字典：广州高频地铁站、商圈、片区、重点楼栋。
@@ -97,3 +97,4 @@ MVP 核心闭环：
 - 当前 `search_houses` 主要是关键词查询，无法可靠表达“东平附近”“地铁前后几站”等位置需求。
 - 纯关键词降级会把“东平”过快扩大到“白云区”，需要地理化位置策略。
 - 模型工具调用能力可能因供应商不同而不稳定，MVP 应由后端控制 MCP 调用。
+- 已支持阿里云百炼 OpenAI-compatible 接口；如果模型调用失败或输出不合法，后端会回退到规则解析。

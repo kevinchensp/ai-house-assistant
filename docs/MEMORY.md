@@ -226,9 +226,10 @@ MVP 策略：
 
 ```text
 assistant 已改为 LLMProvider.extractRequirement() 优先。
-当前 MockLlmProvider 用本地代码模拟模型理解能力，可处理部分更自然的表达。
+已实现 BailianLlmProvider，可通过阿里云百炼 OpenAI-compatible 接口调用 qwen-plus。
+当前 MockLlmProvider 作为未配置模型或模型失败时的兜底能力，可处理部分更自然的表达。
 如果 provider 抛错或输出不合法，assistant 会回退到规则解析。
-真实国内模型/公司模型网关后续只需要实现同一个 LLMProvider 接口。
+其他真实国内模型/公司模型网关后续只需要实现同一个 LLMProvider 接口。
 ```
 
 多轮上下文记忆：

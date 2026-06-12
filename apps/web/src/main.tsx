@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CheckCircle2, Copy, Home, MapPin, Send, Sparkles, ThumbsDown } from "lucide-react";
 import "./styles.css";
@@ -34,6 +34,13 @@ type ChatResponse = {
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3101";
 
+type HealthResponse = {
+  ok: boolean;
+  mcpMode: "remote" | "mock";
+  llmMode: "bailian" | "mock";
+  llmModel: string;
+};
+
 type ChatMessage = {
   id: string;
   role: "assistant" | "user";
@@ -52,6 +59,23 @@ function App() {
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+
+  useEffect(() => {
+    let ignore = false;
+    void fetch(`${apiBaseUrl}/api/health`)
+      .then((result) => result.json() as Promise<HealthResponse>)
+      .then((nextHealth) => {
+        if (!ignore) setHealth(nextHealth);
+      })
+      .catch(() => {
+        if (!ignore) setHealth(null);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   async function submit() {
     const trimmedMessage = message.trim();
@@ -101,7 +125,7 @@ function App() {
         </div>
         <div className="status-pill">
           <span />
-          P0 本地演示
+          {health ? `MCP ${health.mcpMode} · ${health.llmMode === "bailian" ? health.llmModel : "local mock"}` : "连接中"}
         </div>
       </section>
 

@@ -2,6 +2,7 @@ import cors from "cors";
 import { config as loadDotenv } from "dotenv";
 import express from "express";
 import { createAssistant } from "./assistant";
+import { BailianLlmProvider } from "./bailianLlmProvider";
 import { loadConfig } from "./config";
 import { InMemoryEventLogger } from "./eventLogger";
 import { MockLlmProvider } from "./llmProvider";
@@ -17,7 +18,14 @@ const mcpClient =
   config.mcpServerUrl && config.mcpAuthToken
     ? new McpClient({ url: config.mcpServerUrl, authToken: config.mcpAuthToken })
     : new MockMcpClient();
-const assistant = createAssistant({ mcpClient, eventLogger, llmProvider: new MockLlmProvider() });
+const llmProvider = config.bailianApiKey
+  ? new BailianLlmProvider({
+      apiKey: config.bailianApiKey,
+      baseUrl: config.bailianBaseUrl,
+      model: config.bailianModel
+    })
+  : new MockLlmProvider();
+const assistant = createAssistant({ mcpClient, eventLogger, llmProvider });
 
 app.use(cors());
 app.use(express.json());
@@ -25,7 +33,9 @@ app.use(express.json());
 app.get("/api/health", (_request, response) => {
   response.json({
     ok: true,
-    mcpMode: config.mcpServerUrl && config.mcpAuthToken ? "remote" : "mock"
+    mcpMode: config.mcpServerUrl && config.mcpAuthToken ? "remote" : "mock",
+    llmMode: config.bailianApiKey ? "bailian" : "mock",
+    llmModel: config.bailianApiKey ? config.bailianModel : "local-mock"
   });
 });
 

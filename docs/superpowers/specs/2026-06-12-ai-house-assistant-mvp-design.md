@@ -136,7 +136,7 @@ MVP 推荐方式：
 - 模型必须支持稳定中文理解和稳定 JSON 输出。
 - 第一版不强依赖模型原生 Function Calling。
 - 模型负责理解需求和生成表达，后端代码负责 schema 校验、默认值补全、MCP 调用顺序和安全边界。
-- 当前代码采用 `LLMProvider.extractRequirement()` 优先、规则解析兜底的结构；本地 `MockLlmProvider` 先模拟模型理解能力，后续可替换为国内模型或公司模型网关。
+- 当前代码采用 `LLMProvider.extractRequirement()` 优先、规则解析兜底的结构；已支持阿里云百炼 OpenAI-compatible 接口，未配置或调用失败时回退 `MockLlmProvider` / 规则解析。
 
 推荐执行方式：
 
