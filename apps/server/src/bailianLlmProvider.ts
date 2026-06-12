@@ -141,7 +141,12 @@ function normalizeModelRequirement(input: string, value: unknown): RequirementEx
 function repairLowConfidenceSlots(input: string, requirement: RequirementExtraction): RequirementExtraction {
   const repaired: RequirementExtraction = { ...requirement };
   const localLocation = resolveLocationCandidate(input);
-  if ((!repaired.location || repaired.location.confidence < localLocation.confidence) && localLocation.confidence >= 0.5) {
+  const shouldPreferLocalLocation =
+    localLocation.confidence >= 0.5 &&
+    (!repaired.location ||
+      repaired.location.confidence < localLocation.confidence ||
+      repaired.location.normalized.includes(localLocation.normalized));
+  if (shouldPreferLocalLocation) {
     repaired.location = localLocation;
   }
 

@@ -190,7 +190,7 @@ async function searchWithFallbacks(
     pageSize: 20
   };
   const strict = await callSearch(dependencies, sessionId, "strict_keyword", strictArgs);
-  trace.push({ name: "strict_keyword", arguments: strictArgs, resultCount: strict.length });
+  trace.push({ name: "strict_keyword", arguments: omitEmptyArgs(strictArgs), resultCount: strict.length });
   if (strict.length >= 3) {
     return { houses: withFallbackCoordinates(strict, center), searchTrace: trace };
   }
@@ -205,8 +205,57 @@ async function searchWithFallbacks(
     pageSize: 20
   };
   const fallback = await callSearch(dependencies, sessionId, "district_fallback", fallbackArgs);
-  trace.push({ name: "district_fallback", arguments: fallbackArgs, resultCount: fallback.length });
-  return { houses: withFallbackCoordinates([...strict, ...fallback], center), searchTrace: trace };
+  trace.push({ name: "district_fallback", arguments: omitEmptyArgs(fallbackArgs), resultCount: fallback.length });
+  if (strict.length + fallback.length > 0) {
+    return { houses: withFallbackCoordinates([...strict, ...fallback], center), searchTrace: trace };
+  }
+
+  const expandedBudget = buildExpandedBudget(budget);
+  const budgetFallbackArgs = {
+    ...fallbackArgs,
+    maxRent: expandedBudget.max
+  };
+  const budgetFallback = await callSearch(dependencies, sessionId, "budget_expanded_fallback", budgetFallbackArgs);
+  trace.push({
+    name: "budget_expanded_fallback",
+    arguments: omitEmptyArgs(budgetFallbackArgs),
+    resultCount: budgetFallback.length
+  });
+  if (budgetFallback.length > 0) {
+    return { houses: withFallbackCoordinates([...strict, ...fallback, ...budgetFallback], center), searchTrace: trace };
+  }
+
+  const inventoryBudgetFallbackArgs = {
+    bedroom: requirement.layout.bedroom,
+    livingRoom: requirement.layout.livingRoom,
+    minRent: budget.min,
+    maxRent: expandedBudget.max,
+    status: 0,
+    pageSize: 20
+  };
+  const inventoryBudgetFallback = await callSearch(
+    dependencies,
+    sessionId,
+    "inventory_budget_fallback",
+    inventoryBudgetFallbackArgs
+  );
+  trace.push({
+    name: "inventory_budget_fallback",
+    arguments: omitEmptyArgs(inventoryBudgetFallbackArgs),
+    resultCount: inventoryBudgetFallback.length
+  });
+
+  return {
+    houses: withFallbackCoordinates([...strict, ...fallback, ...budgetFallback, ...inventoryBudgetFallback], center),
+    searchTrace: trace
+  };
+}
+
+function buildExpandedBudget(budget: Budget): Budget {
+  return {
+    ...budget,
+    max: Math.max(Math.round(budget.max * 1.35), budget.target + 400)
+  };
 }
 
 async function callSearch(
@@ -215,9 +264,10 @@ async function callSearch(
   name: string,
   args: Record<string, unknown>
 ): Promise<House[]> {
-  dependencies.eventLogger.record("mcp_called", { sessionId, payload: { name, args } });
+  const sanitizedArgs = omitEmptyArgs(args);
+  dependencies.eventLogger.record("mcp_called", { sessionId, payload: { name, args: sanitizedArgs } });
   try {
-    return await dependencies.mcpClient.searchHouses(args);
+    return await dependencies.mcpClient.searchHouses(sanitizedArgs);
   } catch (error) {
     dependencies.eventLogger.record("mcp_failed", {
       sessionId,
@@ -225,6 +275,10 @@ async function callSearch(
     });
     return [];
   }
+}
+
+function omitEmptyArgs(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null && value !== undefined));
 }
 
 function withFallbackCoordinates(houses: House[], center: Coordinate | null): House[] {
@@ -248,9 +302,10 @@ function buildSalesReply(
   }
 
   const strictHadResults = searchTrace[0]?.resultCount && searchTrace[0].resultCount > 0;
+  const requirementLayout = formatRequirementLayout(requirement);
   const prefix = strictHadResults
     ? `${requirement.location?.normalized ?? "目标位置"}附近有几套比较匹配的房源。`
-    : `${requirement.location?.normalized ?? "目标位置"}附近暂时没看到完全匹配的一室一厅 ${requirement.budget?.target ?? ""} 左右房源，我帮您往周边扩大了一圈。`;
+    : `${requirement.location?.normalized ?? "目标位置"}附近暂时没看到完全匹配的${requirementLayout} ${requirement.budget?.target ?? ""} 左右房源，我帮您往周边扩大了一圈。`;
   const lines = recommendations
     .slice(0, 3)
     .map(
@@ -262,4 +317,10 @@ function buildSalesReply(
     text: `${prefix}\n${lines.join("\n")}\n您看我先发两套最接近的给客户确认吗？`,
     nextAction: "copy_reply"
   };
+}
+
+function formatRequirementLayout(requirement: RequirementExtraction): string {
+  const bedroom = requirement.layout.bedroom === null ? "" : `${requirement.layout.bedroom}室`;
+  const livingRoom = requirement.layout.livingRoom === null ? "" : `${requirement.layout.livingRoom}厅`;
+  return bedroom || livingRoom ? `${bedroom}${livingRoom}` : "目标户型";
 }

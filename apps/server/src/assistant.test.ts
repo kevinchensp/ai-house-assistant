@@ -209,4 +209,185 @@ describe("assistant", () => {
       buildingName: "周边公寓"
     });
   });
+
+  it("automatically widens budget fallback before asking the customer to compromise", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          calls.push(args);
+          if (args.keyword === "白云" && Number(args.maxRent) >= 1000) {
+            return [
+              {
+                houseId: "over-budget",
+                buildingId: "b2",
+                buildingName: "白心公寓12",
+                houseNumber: "110",
+                rentPrice: 1000,
+                deposit: 1000,
+                bedroom: 1,
+                livingRoom: 1,
+                toilet: 1,
+                area: 60,
+                direction: "",
+                status: 0,
+                updatedAt: "2026-06-12T00:00:00.000Z",
+                lng: 113.2558,
+                lat: 23.2036
+              }
+            ];
+          }
+          return [];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "白云石井",
+            normalized: "石井",
+            city: "广州",
+            district: "白云区",
+            placeType: "business_area",
+            center: { lng: 113.2558, lat: 23.2036 },
+            confidence: 0.84
+          },
+          budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-budget-expand",
+      message: "帮我找白云石井一室，预算600左右"
+    });
+
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.searchTrace.map((step) => step.name)).toContain("budget_expanded_fallback");
+    expect(calls.at(-1)).toMatchObject({
+      keyword: "白云",
+      maxRent: 1000
+    });
+    expect(response.recommendations[0]).toMatchObject({
+      houseId: "over-budget",
+      mismatchNote: "租金不在客户预算区间内"
+    });
+  });
+
+  it("uses inventory fallback without keyword when keyword fallbacks return no houses", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          calls.push(args);
+          if (args.keyword === undefined && Number(args.maxRent) >= 1000) {
+            return [
+              {
+                houseId: "inventory-nearby",
+                buildingId: "b3",
+                buildingName: "共生公寓02店A栋",
+                houseNumber: "101",
+                rentPrice: 1000,
+                deposit: 1000,
+                bedroom: 1,
+                livingRoom: 1,
+                toilet: 1,
+                area: 40,
+                direction: "",
+                status: 0,
+                updatedAt: "2026-06-12T00:00:00.000Z",
+                lng: 113.2558,
+                lat: 23.2036
+              }
+            ];
+          }
+          return [];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "白云石井",
+            normalized: "石井",
+            city: "广州",
+            district: "白云区",
+            placeType: "business_area",
+            center: { lng: 113.2558, lat: 23.2036 },
+            confidence: 0.84
+          },
+          budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-inventory-expand",
+      message: "帮我找白云石井一室，预算600左右"
+    });
+
+    expect(response.searchTrace.map((step) => step.name)).toContain("inventory_budget_fallback");
+    expect(calls.at(-1)).toMatchObject({
+      bedroom: 1,
+      maxRent: 1000
+    });
+    expect(calls.at(-1)).not.toHaveProperty("keyword");
+    expect(response.recommendations[0]).toMatchObject({
+      houseId: "inventory-nearby",
+      buildingName: "共生公寓02店A栋"
+    });
+  });
+
+  it("omits null optional filters before calling MCP", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          calls.push(args);
+          return [];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "白云石井",
+            normalized: "石井",
+            city: "广州",
+            district: "白云区",
+            placeType: "business_area",
+            center: { lng: 113.2558, lat: 23.2036 },
+            confidence: 0.84
+          },
+          budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    await assistant.chat({
+      sessionId: "s-null-filters",
+      message: "帮我找白云石井一室，预算600左右"
+    });
+
+    expect(calls[0]).toMatchObject({
+      keyword: "石井",
+      bedroom: 1
+    });
+    expect(calls[0]).not.toHaveProperty("livingRoom");
+  });
 });

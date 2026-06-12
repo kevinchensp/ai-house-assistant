@@ -147,4 +147,44 @@ describe("BailianLlmProvider", () => {
     expect(requirement.budget?.max).toBe(900);
     expect(requirement.layout.bedroom).toBe(1);
   });
+
+  test("prefers local location normalization when model returns a long address", async () => {
+    const provider = new BailianLlmProvider({
+      apiKey: "test-key",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      model: "qwen-plus",
+      fetchFn: vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  location: {
+                    raw: "白云石井",
+                    normalized: "广州市白云区石井街道",
+                    city: "广州",
+                    district: "白云区",
+                    placeType: "business_area",
+                    center: { lng: 113.2558, lat: 23.2036 },
+                    confidence: 0.9
+                  },
+                  budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
+                  layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
+                  preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+                  missingRequiredSlots: [],
+                  shouldAskFollowUp: false,
+                  followUpQuestion: null
+                })
+              }
+            }
+          ]
+        })
+      })
+    });
+
+    const requirement = await provider.extractRequirement("帮我找白云石井一室，预算600左右");
+
+    expect(requirement.location?.normalized).toBe("石井");
+  });
 });
