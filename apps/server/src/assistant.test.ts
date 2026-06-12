@@ -158,4 +158,55 @@ describe("assistant", () => {
     expect(response.requirement.budget?.target).toBe(800);
     expect(response.followUpQuestion).toBeNull();
   });
+
+  it("keeps session requirement context when user accepts nearby fallback", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          calls.push(args);
+          if (args.keyword === "白云" && args.maxRent === 960) {
+            return [
+              {
+                houseId: "nearby",
+                buildingId: "b1",
+                buildingName: "周边公寓",
+                houseNumber: "201",
+                rentPrice: 1000,
+                deposit: 1000,
+                bedroom: 1,
+                livingRoom: 0,
+                toilet: 1,
+                area: 35,
+                direction: "",
+                status: 0,
+                updatedAt: "2026-06-12T00:00:00.000Z",
+                lng: 113.2558,
+                lat: 23.2036
+              }
+            ];
+          }
+          return [];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    await assistant.chat({
+      sessionId: "thread-1",
+      message: "帮我找白云石井一室，预算800左右"
+    });
+    const response = await assistant.chat({
+      sessionId: "thread-1",
+      message: "周边可以"
+    });
+
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.requirement.location?.normalized).toBe("石井");
+    expect(response.requirement.budget?.max).toBe(960);
+    expect(response.recommendations[0]).toMatchObject({
+      houseId: "nearby",
+      buildingName: "周边公寓"
+    });
+  });
 });

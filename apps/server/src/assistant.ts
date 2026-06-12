@@ -45,6 +45,8 @@ export type ChatResponse = {
 };
 
 export function createAssistant(dependencies: AssistantDependencies) {
+  const sessionState = new Map<string, RequirementExtraction>();
+
   return {
     async chat(request: ChatRequest): Promise<ChatResponse> {
       dependencies.eventLogger.record("message_sent", {
@@ -52,7 +54,8 @@ export function createAssistant(dependencies: AssistantDependencies) {
         payload: { text: request.message }
       });
 
-      const requirement = await extractRequirementWithFallback(dependencies, request.message);
+      const priorRequirement = sessionState.get(request.sessionId) ?? null;
+      const requirement = await resolveTurnRequirement(dependencies, request.message, priorRequirement);
       dependencies.eventLogger.record("requirement_extracted", {
         sessionId: request.sessionId,
         payload: { requirement }
@@ -82,6 +85,8 @@ export function createAssistant(dependencies: AssistantDependencies) {
           }
         };
       }
+
+      sessionState.set(request.sessionId, requirement);
 
       const { houses, searchTrace } = await searchWithFallbacks(dependencies, request.sessionId, requirement);
       const recommendations = rankHouses(houses, {
@@ -113,6 +118,17 @@ export function createAssistant(dependencies: AssistantDependencies) {
   };
 }
 
+async function resolveTurnRequirement(
+  dependencies: AssistantDependencies,
+  message: string,
+  priorRequirement: RequirementExtraction | null
+): Promise<RequirementExtraction> {
+  if (priorRequirement && isNearbyAcceptance(message)) {
+    return widenRequirementForNearby(priorRequirement, { widenBudget: isBudgetWidening(message) });
+  }
+  return extractRequirementWithFallback(dependencies, message);
+}
+
 async function extractRequirementWithFallback(
   dependencies: AssistantDependencies,
   message: string
@@ -125,6 +141,35 @@ async function extractRequirementWithFallback(
     }
   }
   return extractRequirementByRules(message);
+}
+
+function isNearbyAcceptance(message: string): boolean {
+  return /周边可以|附近也行|附近可以|可以周边|预算.*上浮|上浮.*预算|可以/.test(message.trim());
+}
+
+function isBudgetWidening(message: string): boolean {
+  return /预算.*上浮|上浮.*预算|贵点也行|加点预算|预算可以高/.test(message);
+}
+
+function widenRequirementForNearby(
+  requirement: RequirementExtraction,
+  options: { widenBudget: boolean }
+): RequirementExtraction {
+  const widenedBudget = options.widenBudget && requirement.budget
+    ? {
+        ...requirement.budget,
+        max: Math.round(requirement.budget.max * 1.3),
+        confidence: Math.min(1, requirement.budget.confidence + 0.03)
+      }
+    : requirement.budget;
+
+  return validateRequirementExtraction({
+    ...requirement,
+    budget: widenedBudget,
+    missingRequiredSlots: [],
+    shouldAskFollowUp: false,
+    followUpQuestion: null
+  });
 }
 
 async function searchWithFallbacks(
