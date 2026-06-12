@@ -87,7 +87,7 @@ h3 {
 .workspace {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(0, 1fr) 390px;
+  grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
   margin: 0 auto;
   max-width: 1440px;
 }
@@ -102,7 +102,9 @@ h3 {
   border: 1px solid #d7dfcf;
   border-radius: 8px;
   display: grid;
-  grid-template-rows: minmax(520px, calc(100vh - 210px)) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: calc(100vh - 116px);
+  min-height: 600px;
   overflow: hidden;
 }
 
@@ -192,15 +194,17 @@ h3 {
   border-top: 1px solid #d7dfcf;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) 48px;
-  padding: 14px;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  padding: 16px;
 }
 
 textarea {
   background: #fff;
   border: 1px solid #cfd8c8;
   border-radius: 8px;
-  min-height: 74px;
+  height: 92px;
+  max-height: 160px;
+  min-height: 92px;
   outline: none;
   padding: 13px;
   resize: vertical;
@@ -227,14 +231,18 @@ textarea:focus {
 .send-button {
   background: #173f35;
   color: white;
-  height: 48px;
-  width: 48px;
+  height: 52px;
+  margin-bottom: 2px;
+  width: 52px;
 }
 
 .insight-sidebar {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  height: calc(100vh - 116px);
+  min-height: 600px;
+  overflow-y: auto;
 }
 
 .sidebar-section {
@@ -389,7 +397,14 @@ pre {
   }
 
   .chat-panel {
-    grid-template-rows: minmax(480px, 62vh) auto;
+    height: 66vh;
+    min-height: 520px;
+  }
+
+  .insight-sidebar {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
   }
 }
 
@@ -412,8 +427,28 @@ pre {
     padding: 16px;
   }
 
+  .chat-panel {
+    height: 68vh;
+    min-height: 500px;
+  }
+
   .chat-message {
     max-width: 100%;
+  }
+
+  .composer {
+    grid-template-columns: minmax(0, 1fr) 48px;
+    padding: 12px;
+  }
+
+  textarea {
+    height: 82px;
+    min-height: 82px;
+  }
+
+  .send-button {
+    height: 48px;
+    width: 48px;
   }
 
   .summary-band {
