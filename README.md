@@ -7,7 +7,9 @@
 - TypeScript monorepo：`apps/server`、`apps/web`、`packages/shared`
 - 后端 API：`POST /api/ai-house-assistant/chat`
 - MCP Client：支持 HTTP JSON-RPC `tools/call`
-- P0 规则：预算解析、位置字典、位置置信度、距离计算、房源排序
+- 需求理解：`LLMProvider.extractRequirement()` 优先，规则解析兜底
+- 当前模型：`MockLlmProvider` 本地模拟模型理解能力，后续可替换为国内模型或公司模型网关
+- P0 规则：预算解析、位置字典、位置置信度、距离计算、房源排序、schema 校验
 - 事件日志：需求发送、需求抽取、位置解析、MCP 调用、推荐展示、话术生成
 - 前端工作台：需求输入、推荐房源卡片、客服话术复制、反馈按钮
 - 默认 mock MCP：没有 `.env` 时也能本地演示

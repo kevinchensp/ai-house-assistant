@@ -4,12 +4,12 @@ import {
   type House,
   type RankedHouse,
   type RequirementExtraction,
-  parseBudgetAround,
   rankHouses,
-  resolveLocation,
   validateRequirementExtraction
 } from "@ai-house-assistant/shared";
 import type { InMemoryEventLogger } from "./eventLogger";
+import type { RequirementExtractionProvider } from "./llmProvider";
+import { extractRequirementByRules } from "./requirementRules";
 
 export type AssistantMcpClient = {
   searchHouses(args: Record<string, unknown>): Promise<House[]>;
@@ -18,6 +18,7 @@ export type AssistantMcpClient = {
 export type AssistantDependencies = {
   mcpClient: AssistantMcpClient;
   eventLogger: InMemoryEventLogger;
+  llmProvider?: RequirementExtractionProvider;
 };
 
 export type ChatRequest = {
@@ -51,7 +52,7 @@ export function createAssistant(dependencies: AssistantDependencies) {
         payload: { text: request.message }
       });
 
-      const requirement = extractRequirement(request.message);
+      const requirement = await extractRequirementWithFallback(dependencies, request.message);
       dependencies.eventLogger.record("requirement_extracted", {
         sessionId: request.sessionId,
         payload: { requirement }
@@ -112,64 +113,18 @@ export function createAssistant(dependencies: AssistantDependencies) {
   };
 }
 
-function extractRequirement(message: string): RequirementExtraction {
-  const location = message.match(/东平|白云大道北|天瑞广场|石井|白云/) ? resolveLocation(message) : null;
-  const budget = parseBudgetAround(message);
-  const bedroom = extractBedroom(message);
-  const livingRoom = extractLivingRoom(message);
-  const layout = {
-    bedroom,
-    livingRoom,
-    toilet: null,
-    confidence: bedroom !== null ? 0.9 : 0.3
-  };
-
-  const missingRequiredSlots: string[] = [];
-  if (!location || location.confidence < 0.5) missingRequiredSlots.push("location");
-  if (!budget) missingRequiredSlots.push("budget");
-  if (layout.bedroom === null) missingRequiredSlots.push("layout");
-
-  return validateRequirementExtraction({
-    location,
-    budget,
-    layout,
-    preferences: {
-      rentType: null,
-      direction: null,
-      minArea: null,
-      moveInDate: null
-    },
-    missingRequiredSlots,
-    shouldAskFollowUp: missingRequiredSlots.length > 0,
-    followUpQuestion:
-      missingRequiredSlots.length > 0 ? "请问客户主要想看哪个区域、预算大概多少，以及户型要求是什么？" : null
-  });
-}
-
-function extractBedroom(message: string): number | null {
-  if (/一居室|一房|一室|1室|1房|单间/.test(message)) {
-    return 1;
+async function extractRequirementWithFallback(
+  dependencies: AssistantDependencies,
+  message: string
+): Promise<RequirementExtraction> {
+  if (dependencies.llmProvider) {
+    try {
+      return validateRequirementExtraction(await dependencies.llmProvider.extractRequirement(message));
+    } catch {
+      return extractRequirementByRules(message);
+    }
   }
-  if (/两居室|两房|二室|2室|2房/.test(message)) {
-    return 2;
-  }
-  if (/三居室|三房|三室|3室|3房/.test(message)) {
-    return 3;
-  }
-  return null;
-}
-
-function extractLivingRoom(message: string): number | null {
-  if (/一厅|1厅/.test(message)) {
-    return 1;
-  }
-  if (/两厅|二厅|2厅/.test(message)) {
-    return 2;
-  }
-  if (/单间|一居室|一房/.test(message)) {
-    return 0;
-  }
-  return null;
+  return extractRequirementByRules(message);
 }
 
 async function searchWithFallbacks(

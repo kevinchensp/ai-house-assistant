@@ -4,6 +4,7 @@ import express from "express";
 import { createAssistant } from "./assistant";
 import { loadConfig } from "./config";
 import { InMemoryEventLogger } from "./eventLogger";
+import { MockLlmProvider } from "./llmProvider";
 import { McpClient } from "./mcpClient";
 import { MockMcpClient } from "./mockMcpClient";
 
@@ -16,7 +17,7 @@ const mcpClient =
   config.mcpServerUrl && config.mcpAuthToken
     ? new McpClient({ url: config.mcpServerUrl, authToken: config.mcpAuthToken })
     : new MockMcpClient();
-const assistant = createAssistant({ mcpClient, eventLogger });
+const assistant = createAssistant({ mcpClient, eventLogger, llmProvider: new MockLlmProvider() });
 
 app.use(cors());
 app.use(express.json());

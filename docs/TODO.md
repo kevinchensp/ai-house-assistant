@@ -21,12 +21,14 @@ MVP 核心闭环：
 - [x] 确认 MVP 技术栈：前端、后端、模型服务、部署方式。
 - [x] 确认模型供应商：国内模型、OpenAI、公司内部模型网关，或多 Provider 抽象。
 - [x] 设计 `LLMProvider` 接口，支持后续替换模型。
+- [x] 实现 `LLMProvider.extractRequirement()` 优先、规则解析兜底的编排路径。
 - [x] 设计模型结构化输出 schema：需求抽取、检索计划、推荐结果、客服话术。
 - [x] 实现模型输出校验：JSON 解析、字段校验、置信度判断、失败重试。
 - [x] 设计 AI 后端接口：`POST /api/ai-house-assistant/chat`。
 - [x] 设计会话数据结构：session、message、recommendation、feedback。
 - [x] 实现 MCP Client，支持 HTTP JSON-RPC 调用。
 - [ ] 接入现有 MCP 工具：`search_houses`、`search_buildings`、`get_house_type_summary`。
+- [ ] 接入真实国内模型或公司模型网关，实现生产版 `LLMProvider`。
 - [ ] 修复或规避 `get_house_detail` 依赖 `house_images` 表导致失败的问题。
 - [ ] 确认楼栋表是否稳定提供 `lng` 和 `lat`。
 - [x] 建立最小位置字典：广州高频地铁站、商圈、片区、重点楼栋。
