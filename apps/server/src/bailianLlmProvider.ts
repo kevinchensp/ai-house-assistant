@@ -52,7 +52,7 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
               "location 需包含 raw, normalized, city, district, placeType, center, confidence；无法确认时为 null。",
               "budget 需包含 target, min, max, confidence；例如 1000 左右可解析为 800-1200，九百以内解析为 max 900。",
               "layout 需包含 bedroom, livingRoom, toilet, confidence；一房可设置 bedroom=1, livingRoom=null。",
-              "preferences 需包含 rentType, direction, minArea, moveInDate，未知填 null。",
+              "preferences 需包含 rentType, direction, minArea, moveInDate, features；未知填 null，features 用数组记录近地铁、带阳台、大单间等软偏好。",
               "缺少位置、预算、户型时写入 missingRequiredSlots，并给 followUpQuestion。"
             ].join("\n")
           },
@@ -128,7 +128,8 @@ function normalizeModelRequirement(input: string, value: unknown): RequirementEx
       rentType: getNullableString(preferences.rentType),
       direction: getNullableString(preferences.direction),
       minArea: getNullableNumber(preferences.minArea),
-      moveInDate: getNullableString(preferences.moveInDate)
+      moveInDate: getNullableString(preferences.moveInDate),
+      features: getStringArray(preferences.features)
     },
     missingRequiredSlots: Array.isArray(record.missingRequiredSlots)
       ? record.missingRequiredSlots.filter((slot): slot is string => typeof slot === "string")
@@ -151,6 +152,10 @@ function repairLowConfidenceSlots(input: string, requirement: RequirementExtract
   }
 
   repaired.budget ??= parseBudgetAround(input) ?? parseChineseBudget(input);
+  repaired.preferences = {
+    ...repaired.preferences,
+    features: mergeFeatures(repaired.preferences.features, extractPreferenceFeatures(input))
+  };
   repaired.missingRequiredSlots = getMissingRequiredSlots(repaired);
   repaired.shouldAskFollowUp = repaired.missingRequiredSlots.length > 0;
   repaired.followUpQuestion = repaired.shouldAskFollowUp
@@ -166,8 +171,20 @@ function resolveLocationCandidate(input: string): ReturnType<typeof resolveLocat
     return direct;
   }
 
-  const candidate = input.match(/(白云东平|东平地铁站|东平|白云石井|石井街道|石井|天瑞广场|白云大道北)/)?.[1];
+  const candidate = input.match(/(白云东平|东平地铁站|东平|白云石井|石井街道|石井|白云龙归|龙归地铁站|龙归|天瑞广场|白云大道北)/)?.[1];
   return candidate ? resolveLocation(candidate) : direct;
+}
+
+function extractPreferenceFeatures(input: string): string[] {
+  const features: string[] = [];
+  if (/近地铁|靠近地铁|地铁站|地铁口|离地铁近/.test(input)) features.push("近地铁");
+  if (/阳台|带阳台|有阳台/.test(input)) features.push("带阳台");
+  if (/大单间|大一点|大点|面积大|空间大/.test(input)) features.push("大单间");
+  return features;
+}
+
+function mergeFeatures(current: string[], fallback: string[]): string[] {
+  return Array.from(new Set([...current, ...fallback]));
 }
 
 function getMissingRequiredSlots(requirement: RequirementExtraction): string[] {
@@ -260,6 +277,13 @@ function getNumber(value: unknown): number | null {
 
 function getNullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
 function isCoordinate(value: unknown): value is { lng: number; lat: number } {

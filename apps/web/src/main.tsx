@@ -9,6 +9,13 @@ type ChatResponse = {
     location: { normalized: string; district: string | null; confidence: number } | null;
     budget: { target: number; min: number; max: number } | null;
     layout: { bedroom: number | null; livingRoom: number | null };
+    preferences: {
+      rentType: string | null;
+      direction: string | null;
+      minArea: number | null;
+      moveInDate: string | null;
+      features: string[];
+    };
   };
   followUpQuestion: string | null;
   searchTrace: Array<{ name: string; resultCount: number }>;
@@ -191,9 +198,19 @@ function App() {
                 </div>
                 <div>
                   <span>户型</span>
-                  <strong>
-                    {response.requirement.layout.bedroom ?? "?"}室{response.requirement.layout.livingRoom ?? "?"}厅
-                  </strong>
+                  <strong>{formatRequirementLayout(response.requirement.layout)}</strong>
+                </div>
+                <div className="summary-wide">
+                  <span>偏好</span>
+                  {buildPreferenceChips(response).length ? (
+                    <div className="preference-chips">
+                      {buildPreferenceChips(response).map((chip) => (
+                        <strong key={chip}>{chip}</strong>
+                      ))}
+                    </div>
+                  ) : (
+                    <strong>暂无额外偏好</strong>
+                  )}
                 </div>
               </div>
             ) : (
@@ -264,6 +281,25 @@ function buildAssistantMessage(response: ChatResponse): string {
     return "这组条件暂时没找到合适房源。我建议先问客户是否能接受周边位置或预算上浮。";
   }
   return `我查完了：${traceText}。优先推荐 ${topHouse.buildingName} ${topHouse.houseNumber}，${topHouse.bedroom}室${topHouse.livingRoom}厅，租金${topHouse.rentPrice}元。右侧已经整理好推荐卡片和可复制话术。`;
+}
+
+function formatRequirementLayout(layout: ChatResponse["requirement"]["layout"]): string {
+  const bedroom = layout.bedroom === null ? "?" : layout.bedroom;
+  if (layout.livingRoom === null) {
+    return `${bedroom}室`;
+  }
+  return `${bedroom}室${layout.livingRoom}厅`;
+}
+
+function buildPreferenceChips(response: ChatResponse): string[] {
+  const { preferences } = response.requirement;
+  return [
+    preferences.rentType,
+    preferences.direction,
+    preferences.minArea ? `${preferences.minArea}平以上` : null,
+    preferences.moveInDate ? `${preferences.moveInDate}入住` : null,
+    ...preferences.features
+  ].filter((chip): chip is string => Boolean(chip));
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

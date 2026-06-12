@@ -294,6 +294,25 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.summary-wide {
+  grid-column: 1 / -1;
+}
+
+.preference-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.preference-chips strong {
+  background: #ffffff;
+  border: 1px solid #d4decf;
+  border-radius: 999px;
+  color: #173f35;
+  font-size: 13px;
+  padding: 5px 9px;
+}
+
 .house-list {
   display: grid;
   gap: 10px;

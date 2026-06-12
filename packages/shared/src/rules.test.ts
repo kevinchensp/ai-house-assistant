@@ -33,6 +33,12 @@ describe("resolveLocation", () => {
       placeType: "metro_station",
       confidence: 0.88
     });
+
+    expect(resolveLocation("白云龙归")).toMatchObject({
+      normalized: "龙归",
+      district: "白云区",
+      placeType: "metro_station"
+    });
   });
 
   it("marks unknown locations as uncertain instead of guessing coordinates", () => {
@@ -61,7 +67,7 @@ describe("validateRequirementExtraction", () => {
       location: resolveLocation("白云东平"),
       budget: parseBudgetAround("1000左右"),
       layout: { bedroom: 1, livingRoom: 1, toilet: null, confidence: 0.95 },
-      preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+      preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: ["近地铁"] },
       missingRequiredSlots: [],
       shouldAskFollowUp: false,
       followUpQuestion: null
@@ -69,6 +75,7 @@ describe("validateRequirementExtraction", () => {
 
     expect(result.shouldAskFollowUp).toBe(false);
     expect(result.layout.bedroom).toBe(1);
+    expect(result.preferences.features).toEqual(["近地铁"]);
   });
 });
 

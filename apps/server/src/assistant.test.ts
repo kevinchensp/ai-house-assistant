@@ -114,7 +114,7 @@ describe("assistant", () => {
           },
           budget: { target: 900, min: 0, max: 900, confidence: 0.82 },
           layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.8 },
-          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
           missingRequiredSlots: [],
           shouldAskFollowUp: false,
           followUpQuestion: null
@@ -254,7 +254,7 @@ describe("assistant", () => {
           },
           budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
           layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
-          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
           missingRequiredSlots: [],
           shouldAskFollowUp: false,
           followUpQuestion: null
@@ -323,7 +323,7 @@ describe("assistant", () => {
           },
           budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
           layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
-          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
           missingRequiredSlots: [],
           shouldAskFollowUp: false,
           followUpQuestion: null
@@ -371,7 +371,7 @@ describe("assistant", () => {
           },
           budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
           layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
-          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
           missingRequiredSlots: [],
           shouldAskFollowUp: false,
           followUpQuestion: null

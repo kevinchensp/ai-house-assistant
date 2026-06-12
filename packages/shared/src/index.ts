@@ -39,7 +39,8 @@ export const PreferencesSchema = z.object({
   rentType: z.string().nullable(),
   direction: z.string().nullable(),
   minArea: z.number().nullable(),
-  moveInDate: z.string().nullable()
+  moveInDate: z.string().nullable(),
+  features: z.array(z.string()).default([])
 });
 
 export const RequirementExtractionSchema = z.object({
@@ -149,6 +150,15 @@ const LOCATION_DICTIONARY: LocationDictionaryEntry[] = [
     center: { lng: 113.2558, lat: 23.2036 },
     aliases: ["白云石井", "石井", "石井街道"],
     confidence: 0.84
+  },
+  {
+    normalized: "龙归",
+    city: "广州",
+    district: "白云区",
+    placeType: "metro_station",
+    center: { lng: 113.302512, lat: 23.289728 },
+    aliases: ["白云龙归", "龙归", "龙归地铁站"],
+    confidence: 0.86
   }
 ];
 

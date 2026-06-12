@@ -6,7 +6,7 @@ import {
 } from "@ai-house-assistant/shared";
 
 export function extractRequirementByRules(message: string): RequirementExtraction {
-  const location = message.match(/东平|白云大道北|天瑞广场|石井|白云/) ? resolveLocation(message) : null;
+  const location = message.match(/东平|白云大道北|天瑞广场|石井|龙归|白云/) ? resolveLocation(message) : null;
   const budget = parseBudgetAround(message);
   const bedroom = extractBedroom(message);
   const livingRoom = extractLivingRoom(message);
@@ -30,13 +30,22 @@ export function extractRequirementByRules(message: string): RequirementExtractio
       rentType: null,
       direction: null,
       minArea: null,
-      moveInDate: null
+      moveInDate: null,
+      features: extractFeatures(message)
     },
     missingRequiredSlots,
     shouldAskFollowUp: missingRequiredSlots.length > 0,
     followUpQuestion:
       missingRequiredSlots.length > 0 ? "请问客户主要想看哪个区域、预算大概多少，以及户型要求是什么？" : null
   });
+}
+
+function extractFeatures(message: string): string[] {
+  const features: string[] = [];
+  if (/近地铁|靠近地铁|地铁站|地铁口|离地铁近/.test(message)) features.push("近地铁");
+  if (/阳台|带阳台|有阳台/.test(message)) features.push("带阳台");
+  if (/大单间|大一点|大点|面积大|空间大/.test(message)) features.push("大单间");
+  return features;
 }
 
 function extractBedroom(message: string): number | null {

@@ -21,7 +21,7 @@ describe("BailianLlmProvider", () => {
                 },
                 budget: { target: 900, min: 0, max: 900, confidence: 0.9 },
                 layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
-                preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+                preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: ["近地铁"] },
                 missingRequiredSlots: [],
                 shouldAskFollowUp: false,
                 followUpQuestion: null
@@ -57,6 +57,7 @@ describe("BailianLlmProvider", () => {
     });
     expect(requirement.budget?.max).toBe(900);
     expect(requirement.location?.normalized).toBe("石井");
+    expect(requirement.preferences.features).toEqual(["近地铁"]);
     expect(requirement.shouldAskFollowUp).toBe(false);
   });
 
@@ -99,7 +100,7 @@ describe("BailianLlmProvider", () => {
                   },
                   budget: null,
                   layout: { bedroom: 1, livingRoom: 0, toilet: null, confidence: 0.9 },
-                  preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+                  preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
                   missingRequiredSlots: ["location", "budget"],
                   shouldAskFollowUp: true,
                   followUpQuestion: "请问客户主要想看哪个区域、预算大概多少，以及户型要求是什么？"
@@ -171,7 +172,7 @@ describe("BailianLlmProvider", () => {
                   },
                   budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
                   layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
-                  preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+                  preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: ["带阳台"] },
                   missingRequiredSlots: [],
                   shouldAskFollowUp: false,
                   followUpQuestion: null
@@ -186,5 +187,37 @@ describe("BailianLlmProvider", () => {
     const requirement = await provider.extractRequirement("帮我找白云石井一室，预算600左右");
 
     expect(requirement.location?.normalized).toBe("石井");
+  });
+
+  test("fills preference feature chips from user text when model omits them", async () => {
+    const provider = new BailianLlmProvider({
+      apiKey: "test-key",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      model: "qwen-plus",
+      fetchFn: vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  location: { raw: "白云龙归", normalized: "龙归" },
+                  budget: { target: 600, min: 500, max: 700, confidence: 0.9 },
+                  layout: { bedroom: 1, livingRoom: 0, toilet: null, confidence: 0.85 },
+                  preferences: { rentType: null, direction: null, minArea: null, moveInDate: null },
+                  missingRequiredSlots: [],
+                  shouldAskFollowUp: false,
+                  followUpQuestion: null
+                })
+              }
+            }
+          ]
+        })
+      })
+    });
+
+    const requirement = await provider.extractRequirement("客户想要白云龙归的大单间，预算600左右，靠近地铁站，最好有阳台");
+
+    expect(requirement.preferences.features).toEqual(["近地铁", "带阳台", "大单间"]);
   });
 });
