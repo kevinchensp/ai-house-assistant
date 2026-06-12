@@ -135,12 +135,44 @@ async function extractRequirementWithFallback(
 ): Promise<RequirementExtraction> {
   if (dependencies.llmProvider) {
     try {
-      return validateRequirementExtraction(await dependencies.llmProvider.extractRequirement(message));
+      return normalizeFollowUpQuestion(validateRequirementExtraction(await dependencies.llmProvider.extractRequirement(message)));
     } catch {
-      return extractRequirementByRules(message);
+      return normalizeFollowUpQuestion(extractRequirementByRules(message));
     }
   }
-  return extractRequirementByRules(message);
+  return normalizeFollowUpQuestion(extractRequirementByRules(message));
+}
+
+function normalizeFollowUpQuestion(requirement: RequirementExtraction): RequirementExtraction {
+  const missingRequiredSlots = getMissingRequiredSlots(requirement);
+  return validateRequirementExtraction({
+    ...requirement,
+    missingRequiredSlots,
+    shouldAskFollowUp: missingRequiredSlots.length > 0,
+    followUpQuestion: missingRequiredSlots.length > 0 ? buildFollowUpQuestion(missingRequiredSlots) : null
+  });
+}
+
+function getMissingRequiredSlots(requirement: RequirementExtraction): string[] {
+  const missingRequiredSlots: string[] = [];
+  if (!requirement.location || requirement.location.confidence < 0.5) missingRequiredSlots.push("location");
+  if (!requirement.budget) missingRequiredSlots.push("budget");
+  if (requirement.layout.bedroom === null) missingRequiredSlots.push("layout");
+  return missingRequiredSlots;
+}
+
+function buildFollowUpQuestion(missingRequiredSlots: string[]): string {
+  if (missingRequiredSlots.length === 1 && missingRequiredSlots[0] === "layout") {
+    return "客户对户型有要求吗？如果没特别要求，我可以先按常见一居室推荐，包含单间和一室一厅。";
+  }
+
+  const labels = missingRequiredSlots.map((slot) => {
+    if (slot === "location") return "区域";
+    if (slot === "budget") return "预算";
+    if (slot === "layout") return "户型";
+    return slot;
+  });
+  return `请再确认客户的${labels.join("、")}要求。`;
 }
 
 function isNearbyAcceptance(message: string): boolean {

@@ -20,6 +20,45 @@ describe("assistant", () => {
     expect(response.recommendations).toEqual([]);
   });
 
+  it("asks only for layout when location and budget are already known", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => []
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "永泰",
+            normalized: "永泰",
+            city: "广州",
+            district: "白云区",
+            placeType: "metro_station",
+            center: { lng: 113.3069, lat: 23.2202 },
+            confidence: 0.84
+          },
+          budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+          layout: { bedroom: null, livingRoom: null, toilet: null, confidence: 0.2 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: ["layout"],
+          shouldAskFollowUp: true,
+          followUpQuestion: "请问客户主要想看哪个区域、预算大概多少，以及户型要求是什么？"
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-layout-only",
+      message: "我想要找永泰的房子1000左右"
+    });
+
+    expect(response.followUpQuestion).toContain("户型");
+    expect(response.followUpQuestion).toContain("单间");
+    expect(response.followUpQuestion).toContain("一室一厅");
+    expect(response.followUpQuestion).not.toContain("区域");
+    expect(response.followUpQuestion).not.toContain("预算");
+  });
+
   it("recommends ranked fallback houses from MCP results", async () => {
     const assistant = createAssistant({
       mcpClient: {
