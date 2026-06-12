@@ -16,6 +16,7 @@ type ChatResponse = {
       moveInDate: string | null;
       features: string[];
     };
+    missingRequiredSlots: string[];
   };
   followUpQuestion: string | null;
   searchTrace: Array<{ name: string; resultCount: number }>;
@@ -187,7 +188,11 @@ function App() {
               <div className="summary-band">
                 <div>
                   <span>位置</span>
-                  <strong>{response.requirement.location?.normalized ?? "待确认"}</strong>
+                  <strong>
+                    {response.requirement.missingRequiredSlots.includes("location")
+                      ? "待确认"
+                      : response.requirement.location?.normalized ?? "待确认"}
+                  </strong>
                 </div>
                 <div>
                   <span>预算</span>

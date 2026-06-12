@@ -17,6 +17,7 @@ describe("assistant", () => {
     });
 
     expect(response.followUpQuestion).toContain("区域");
+    expect(response.followUpQuestion).toContain("具体位置");
     expect(response.recommendations).toEqual([]);
   });
 
@@ -57,6 +58,46 @@ describe("assistant", () => {
     expect(response.followUpQuestion).toContain("一室一厅");
     expect(response.followUpQuestion).not.toContain("区域");
     expect(response.followUpQuestion).not.toContain("预算");
+  });
+
+  it("asks for a more specific place when location is only an administrative district", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => []
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "白云区",
+            normalized: "广州市白云区",
+            city: "广州",
+            district: "白云区",
+            placeType: "unknown",
+            center: null,
+            confidence: 0.86
+          },
+          budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+          layout: { bedroom: 2, livingRoom: null, toilet: null, confidence: 0.8 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-district-only",
+      message: "帮我找白云的两房，预算1000左右"
+    });
+
+    expect(response.requirement.missingRequiredSlots).toEqual(["location"]);
+    expect(response.followUpQuestion).toContain("具体位置");
+    expect(response.followUpQuestion).toContain("商圈");
+    expect(response.followUpQuestion).not.toContain("预算");
+    expect(response.followUpQuestion).not.toContain("户型");
+    expect(response.searchTrace).toEqual([]);
   });
 
   it("recommends ranked fallback houses from MCP results", async () => {

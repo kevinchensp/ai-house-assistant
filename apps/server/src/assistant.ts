@@ -155,19 +155,33 @@ function normalizeFollowUpQuestion(requirement: RequirementExtraction): Requirem
 
 function getMissingRequiredSlots(requirement: RequirementExtraction): string[] {
   const missingRequiredSlots: string[] = [];
-  if (!requirement.location || requirement.location.confidence < 0.5) missingRequiredSlots.push("location");
+  if (!isLocationSpecificEnough(requirement.location)) missingRequiredSlots.push("location");
   if (!requirement.budget) missingRequiredSlots.push("budget");
   if (requirement.layout.bedroom === null) missingRequiredSlots.push("layout");
   return missingRequiredSlots;
 }
 
+function isLocationSpecificEnough(location: RequirementExtraction["location"]): boolean {
+  if (!location || location.confidence < 0.5) {
+    return false;
+  }
+  if (location.placeType === "unknown" || !location.center) {
+    return false;
+  }
+  return !/(区|市)$/.test(location.normalized);
+}
+
 function buildFollowUpQuestion(missingRequiredSlots: string[]): string {
+  if (missingRequiredSlots.length === 1 && missingRequiredSlots[0] === "location") {
+    return "白云区范围比较大，客户更想看哪个具体位置？可以补充地铁站、商圈、街道或小区，例如东平、永泰、龙归、石井。";
+  }
+
   if (missingRequiredSlots.length === 1 && missingRequiredSlots[0] === "layout") {
     return "客户对户型有要求吗？如果没特别要求，我可以先按常见一居室推荐，包含单间和一室一厅。";
   }
 
   const labels = missingRequiredSlots.map((slot) => {
-    if (slot === "location") return "区域";
+    if (slot === "location") return "具体位置（区域内的地铁站、商圈、街道或小区）";
     if (slot === "budget") return "预算";
     if (slot === "layout") return "户型";
     return slot;
