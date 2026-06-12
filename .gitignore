@@ -4,6 +4,7 @@ dist-types/
 .env
 .DS_Store
 *.log
+*.tsbuildinfo
 .worktrees/
 apps/web/dist/
 apps/server/dist/
