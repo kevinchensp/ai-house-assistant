@@ -1,10 +1,13 @@
 import cors from "cors";
+import { config as loadDotenv } from "dotenv";
 import express from "express";
 import { createAssistant } from "./assistant";
 import { loadConfig } from "./config";
 import { InMemoryEventLogger } from "./eventLogger";
 import { McpClient } from "./mcpClient";
 import { MockMcpClient } from "./mockMcpClient";
+
+loadDotenv({ path: new URL("../../../.env", import.meta.url) });
 
 const config = loadConfig();
 const app = express();

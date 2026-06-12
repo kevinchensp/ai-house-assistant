@@ -13,6 +13,7 @@
   "dependencies": {
     "@ai-house-assistant/shared": "file:../../packages/shared",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "zod": "^3.25.0"
   },
