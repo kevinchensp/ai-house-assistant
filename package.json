@@ -1,0 +1,26 @@
+{
+  "name": "ai-house-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @ai-house-assistant/server",
+    "dev:web": "npm run dev --workspace @ai-house-assistant/web",
+    "build": "npm run build --workspaces",
+    "test": "vitest run",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0"
+  },
+  "dependencies": {
+    "zod": "^3.25.0"
+  }
+}

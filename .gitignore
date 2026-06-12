@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-types/
+.env
+.DS_Store
+*.log
+.worktrees/
+apps/web/dist/
+apps/server/dist/
+packages/shared/dist/
