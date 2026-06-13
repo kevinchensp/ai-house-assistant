@@ -87,14 +87,99 @@ h3 {
 .workspace {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
+  grid-template-columns: minmax(250px, 0.58fr) minmax(420px, 1.12fr) minmax(380px, 0.9fr);
   margin: 0 auto;
-  max-width: 1440px;
+  max-width: 1480px;
 }
 
+.customer-sidebar,
 .chat-panel,
 .insight-sidebar {
   min-width: 0;
+}
+
+.customer-sidebar {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid #d7dfcf;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: calc(100vh - 116px);
+  min-height: 600px;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.customer-sidebar-header {
+  display: grid;
+  gap: 10px;
+}
+
+.new-customer-button {
+  align-items: center;
+  background: #173f35;
+  border: 0;
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 8px;
+  justify-content: center;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.customer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.customer-card {
+  background: #fbfcf8;
+  border: 1px solid #d9dfd3;
+  border-radius: 10px;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  text-align: left;
+  width: 100%;
+}
+
+.customer-card.active {
+  background: #e8f2e5;
+  border-color: #7b9d76;
+  box-shadow: inset 3px 0 0 #173f35;
+}
+
+.customer-card-title {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.customer-card-title span {
+  color: #758070;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.customer-card p {
+  color: #354536;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.customer-card small {
+  color: #a55120;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .chat-panel {
@@ -415,6 +500,17 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .customer-sidebar {
+    height: auto;
+    min-height: 0;
+  }
+
+  .customer-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
   .chat-panel {
     height: 66vh;
     min-height: 520px;
@@ -453,6 +549,10 @@ pre {
 
   .chat-message {
     max-width: 100%;
+  }
+
+  .customer-list {
+    grid-template-columns: 1fr;
   }
 
   .composer {

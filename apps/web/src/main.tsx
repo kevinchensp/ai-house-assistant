@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CheckCircle2, Copy, Home, MapPin, Send, Sparkles, ThumbsDown } from "lucide-react";
+import { CheckCircle2, Copy, Home, MapPin, Plus, Send, Sparkles, ThumbsDown, Users } from "lucide-react";
 import "./styles.css";
 
 type ChatResponse = {
@@ -55,19 +55,48 @@ type ChatMessage = {
   text: string;
 };
 
+type CustomerSession = {
+  id: string;
+  name: string;
+  draft: string;
+  messages: ChatMessage[];
+  response: ChatResponse | null;
+  updatedAt: number;
+};
+
+const welcomeMessage: ChatMessage = {
+  id: "welcome",
+  role: "assistant",
+  text: "你好，我是运东 Ai 找房助手。把客户的区域、预算、户型发给我，我会先查严格匹配，没房源时再按周边距离和预算策略扩圈。"
+};
+
+function createCustomerSession(index: number): CustomerSession {
+  return {
+    id: crypto.randomUUID(),
+    name: `客户 ${index}`,
+    draft: index === 1 ? "帮我找白云东平一室一厅，预算1000左右" : "",
+    messages: [welcomeMessage],
+    response: null,
+    updatedAt: Date.now()
+  };
+}
+
 function App() {
-  const [message, setMessage] = useState("帮我找白云东平一室一厅，预算1000左右");
-  const [response, setResponse] = useState<ChatResponse | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      text: "你好，我是运东 Ai 找房助手。把客户的区域、预算、户型发给我，我会先查严格匹配，没房源时再按周边距离和预算策略扩圈。"
-    }
-  ]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [customers, setCustomers] = useState<CustomerSession[]>(() => [createCustomerSession(1)]);
+  const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
+  const [loadingCustomerId, setLoadingCustomerId] = useState<string | null>(null);
+  const [copiedCustomerId, setCopiedCustomerId] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const activeCustomer = customers.find((customer) => customer.id === activeCustomerId) ?? customers[0];
+  const isLoading = loadingCustomerId === activeCustomer?.id;
+  const copied = copiedCustomerId === activeCustomer?.id;
+  const response = activeCustomer?.response ?? null;
+
+  useEffect(() => {
+    if (!activeCustomerId && customers[0]) {
+      setActiveCustomerId(customers[0].id);
+    }
+  }, [activeCustomerId, customers]);
 
   useEffect(() => {
     let ignore = false;
@@ -86,43 +115,78 @@ function App() {
   }, []);
 
   async function submit() {
-    const trimmedMessage = message.trim();
-    if (!trimmedMessage || isLoading) return;
+    if (!activeCustomer) return;
+    const trimmedMessage = activeCustomer.draft.trim();
+    if (!trimmedMessage || loadingCustomerId) return;
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
       text: trimmedMessage
     };
-    setMessages((current) => [...current, userMessage]);
-    setMessage("");
-    setIsLoading(true);
-    setCopied(false);
+    setCustomers((current) =>
+      current.map((customer) =>
+        customer.id === activeCustomer.id
+          ? {
+              ...customer,
+              draft: "",
+              messages: [...customer.messages, userMessage],
+              updatedAt: Date.now()
+            }
+          : customer
+      )
+    );
+    setLoadingCustomerId(activeCustomer.id);
+    setCopiedCustomerId(null);
     try {
       const result = await fetch(`${apiBaseUrl}/api/ai-house-assistant/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: "demo-session", message: trimmedMessage })
+        body: JSON.stringify({ sessionId: activeCustomer.id, message: trimmedMessage })
       });
       const nextResponse = (await result.json()) as ChatResponse;
-      setResponse(nextResponse);
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text: buildAssistantMessage(nextResponse)
-        }
-      ]);
+      setCustomers((current) =>
+        current.map((customer) =>
+          customer.id === activeCustomer.id
+            ? {
+                ...customer,
+                response: nextResponse,
+                messages: [
+                  ...customer.messages,
+                  {
+                    id: crypto.randomUUID(),
+                    role: "assistant",
+                    text: buildAssistantMessage(nextResponse)
+                  }
+                ],
+                updatedAt: Date.now()
+              }
+            : customer
+        )
+      );
     } finally {
-      setIsLoading(false);
+      setLoadingCustomerId(null);
     }
   }
 
   async function copyReply() {
-    if (!response) return;
+    if (!response || !activeCustomer) return;
     await navigator.clipboard.writeText(response.salesReply.text);
-    setCopied(true);
+    setCopiedCustomerId(activeCustomer.id);
+  }
+
+  function updateDraft(value: string) {
+    if (!activeCustomer) return;
+    setCustomers((current) =>
+      current.map((customer) => (customer.id === activeCustomer.id ? { ...customer, draft: value } : customer))
+    );
+  }
+
+  function createCustomer() {
+    const nextCustomer = createCustomerSession(customers.length + 1);
+    setCustomers((current) => [nextCustomer, ...current]);
+    setActiveCustomerId(nextCustomer.id);
+    setCopiedCustomerId(null);
   }
 
   return (
@@ -138,9 +202,42 @@ function App() {
       </section>
 
       <section className="workspace">
+        <aside className="customer-sidebar">
+          <div className="customer-sidebar-header">
+            <div className="section-title">
+              <Users size={18} />
+              <h2>客户队列</h2>
+            </div>
+            <button className="new-customer-button" onClick={createCustomer}>
+              <Plus size={16} />
+              新客户
+            </button>
+          </div>
+
+          <div className="customer-list">
+            {customers.map((customer) => (
+              <button
+                className={`customer-card ${customer.id === activeCustomer?.id ? "active" : ""}`}
+                key={customer.id}
+                onClick={() => {
+                  setActiveCustomerId(customer.id);
+                  setCopiedCustomerId(null);
+                }}
+              >
+                <div className="customer-card-title">
+                  <strong>{customer.name}</strong>
+                  <span>{formatUpdatedAt(customer.updatedAt)}</span>
+                </div>
+                <p>{buildCustomerSummary(customer)}</p>
+                <small>{buildCustomerStatus(customer)}</small>
+              </button>
+            ))}
+          </div>
+        </aside>
+
         <section className="chat-panel">
           <div className="chat-thread" aria-live="polite">
-            {messages.map((chatMessage) => (
+            {activeCustomer?.messages.map((chatMessage) => (
               <article className={`chat-message ${chatMessage.role}`} key={chatMessage.id}>
                 <div className="avatar">{chatMessage.role === "assistant" ? <Sparkles size={18} /> : "客"}</div>
                 <div className="bubble">
@@ -162,8 +259,8 @@ function App() {
 
           <div className="composer">
             <textarea
-              value={message}
-              onChange={(event) => setMessage(event.target.value)}
+              value={activeCustomer?.draft ?? ""}
+              onChange={(event) => updateDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
@@ -172,7 +269,7 @@ function App() {
               }}
               placeholder="输入客户需求，例如：白云东平一室一厅，预算1000左右"
             />
-            <button className="send-button" onClick={submit} disabled={isLoading || !message.trim()} title="发送需求">
+            <button className="send-button" onClick={submit} disabled={Boolean(loadingCustomerId) || !activeCustomer?.draft.trim()} title="发送需求">
               <Send size={20} />
             </button>
           </div>
@@ -306,6 +403,52 @@ function buildPreferenceChips(response: ChatResponse): string[] {
     preferences.moveInDate ? `${preferences.moveInDate}入住` : null,
     ...preferences.features
   ].filter((chip): chip is string => Boolean(chip));
+}
+
+function buildCustomerSummary(customer: CustomerSession): string {
+  if (!customer.response) {
+    const latestUserMessage = [...customer.messages].reverse().find((message) => message.role === "user");
+    return latestUserMessage?.text ?? "等待输入客户需求";
+  }
+
+  const { requirement } = customer.response;
+  const location = requirement.missingRequiredSlots.includes("location")
+    ? "位置待确认"
+    : requirement.location?.normalized ?? "位置待确认";
+  const budget = requirement.budget ? `${requirement.budget.target}左右` : "预算待确认";
+  const layout = requirement.layout.bedroom === null ? "户型待确认" : formatRequirementLayout(requirement.layout);
+  return `${location} · ${budget} · ${layout}`;
+}
+
+function buildCustomerStatus(customer: CustomerSession): string {
+  const response = customer.response;
+  if (!response) {
+    return "待输入需求";
+  }
+  if (response.followUpQuestion) {
+    return `待补充：${response.requirement.missingRequiredSlots.map(formatMissingSlot).join("、")}`;
+  }
+  if (response.recommendations.length > 0) {
+    return `已推荐 ${response.recommendations.length} 套，待客户反馈`;
+  }
+  return "暂无合适房源，待确认放宽条件";
+}
+
+function formatMissingSlot(slot: string): string {
+  if (slot === "location") return "具体位置";
+  if (slot === "budget") return "预算";
+  if (slot === "layout") return "户型";
+  return slot;
+}
+
+function formatUpdatedAt(updatedAt: number): string {
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - updatedAt) / 1000));
+  if (diffSeconds < 60) return "刚刚";
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes}分钟前`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}小时前`;
+  return `${Math.floor(diffHours / 24)}天前`;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
