@@ -6,6 +6,7 @@ dist-types/
 *.log
 *.tsbuildinfo
 .worktrees/
+.data/
 apps/web/dist/
 apps/server/dist/
 packages/shared/dist/

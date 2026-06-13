@@ -5,6 +5,7 @@ export type ServerConfig = {
   bailianApiKey: string | null;
   bailianBaseUrl: string;
   bailianModel: string;
+  appDataPath: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -14,6 +15,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     mcpAuthToken: env.MCP_AUTH_TOKEN ?? null,
     bailianApiKey: env.BAILIAN_API_KEY ?? null,
     bailianBaseUrl: env.BAILIAN_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    bailianModel: env.BAILIAN_MODEL ?? "qwen-plus"
+    bailianModel: env.BAILIAN_MODEL ?? "qwen-plus",
+    appDataPath: env.APP_DATA_PATH ?? ".data/ai-house-assistant.json"
   };
 }

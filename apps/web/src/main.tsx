@@ -64,13 +64,32 @@ type CustomerSession = {
   updatedAt: number;
 };
 
+type AuthUser = {
+  id: string;
+  name: string;
+};
+
+type StoredCustomerSession = {
+  id: string;
+  customerName: string;
+  status: string;
+  latestResponse: ChatResponse | null;
+  updatedAt: string;
+  messages: Array<{
+    id: string;
+    role: "assistant" | "user";
+    content: string;
+    createdAt: string;
+  }>;
+};
+
 const welcomeMessage: ChatMessage = {
   id: "welcome",
   role: "assistant",
   text: "你好，我是运东 Ai 找房助手。把客户的区域、预算、户型发给我，我会先查严格匹配，没房源时再按周边距离和预算策略扩圈。"
 };
 
-function createCustomerSession(index: number): CustomerSession {
+function createLocalCustomerSession(index: number): CustomerSession {
   return {
     id: crypto.randomUUID(),
     name: `客户 ${index}`,
@@ -81,8 +100,44 @@ function createCustomerSession(index: number): CustomerSession {
   };
 }
 
+function mapStoredSession(session: StoredCustomerSession): CustomerSession {
+  return {
+    id: session.id,
+    name: session.customerName,
+    draft: "",
+    messages: session.messages.length
+      ? session.messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          text: message.content
+        }))
+      : [welcomeMessage],
+    response: session.latestResponse,
+    updatedAt: Date.parse(session.updatedAt)
+  };
+}
+
+async function apiFetch(token: string, path: string, init: RequestInit = {}): Promise<unknown> {
+  const result = await fetch(`${apiBaseUrl}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...init.headers
+    }
+  });
+  if (!result.ok) {
+    throw new Error(`API request failed with ${result.status}`);
+  }
+  return result.json();
+}
+
 function App() {
-  const [customers, setCustomers] = useState<CustomerSession[]>(() => [createCustomerSession(1)]);
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem("ai-house-auth-token"));
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loginName, setLoginName] = useState("小陈");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [customers, setCustomers] = useState<CustomerSession[]>([]);
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
   const [loadingCustomerId, setLoadingCustomerId] = useState<string | null>(null);
   const [copiedCustomerId, setCopiedCustomerId] = useState<string | null>(null);
@@ -97,6 +152,45 @@ function App() {
       setActiveCustomerId(customers[0].id);
     }
   }, [activeCustomerId, customers]);
+
+  useEffect(() => {
+    if (!authToken) return;
+    const token = authToken;
+    let ignore = false;
+    async function bootstrap() {
+      try {
+        const me = (await apiFetch(token, "/api/me")) as { user: AuthUser };
+        const sessionPayload = (await apiFetch(token, "/api/customer-sessions")) as {
+          sessions: StoredCustomerSession[];
+        };
+        if (ignore) return;
+        setUser(me.user);
+        const sessions = sessionPayload.sessions.length
+          ? sessionPayload.sessions
+          : [
+              ((await apiFetch(token, "/api/customer-sessions", {
+                method: "POST",
+                body: JSON.stringify({ customerName: "客户 1" })
+              })) as { session: StoredCustomerSession }).session
+            ];
+        const nextCustomers = sessions.map(mapStoredSession);
+        setCustomers(nextCustomers);
+        setActiveCustomerId((current) => current ?? nextCustomers[0]?.id ?? null);
+        setAuthError(null);
+      } catch {
+        if (ignore) return;
+        localStorage.removeItem("ai-house-auth-token");
+        setAuthToken(null);
+        setUser(null);
+        setCustomers([]);
+        setActiveCustomerId(null);
+      }
+    }
+    void bootstrap();
+    return () => {
+      ignore = true;
+    };
+  }, [authToken]);
 
   useEffect(() => {
     let ignore = false;
@@ -115,7 +209,7 @@ function App() {
   }, []);
 
   async function submit() {
-    if (!activeCustomer) return;
+    if (!activeCustomer || !authToken) return;
     const trimmedMessage = activeCustomer.draft.trim();
     if (!trimmedMessage || loadingCustomerId) return;
 
@@ -141,7 +235,7 @@ function App() {
     try {
       const result = await fetch(`${apiBaseUrl}/api/ai-house-assistant/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${authToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: activeCustomer.id, message: trimmedMessage })
       });
       const nextResponse = (await result.json()) as ChatResponse;
@@ -183,10 +277,66 @@ function App() {
   }
 
   function createCustomer() {
-    const nextCustomer = createCustomerSession(customers.length + 1);
-    setCustomers((current) => [nextCustomer, ...current]);
-    setActiveCustomerId(nextCustomer.id);
-    setCopiedCustomerId(null);
+    if (!authToken) return;
+    void apiFetch(authToken, "/api/customer-sessions", {
+      method: "POST",
+      body: JSON.stringify({ customerName: `客户 ${customers.length + 1}` })
+    }).then((payload) => {
+      const nextCustomer = mapStoredSession((payload as { session: StoredCustomerSession }).session);
+      setCustomers((current) => [nextCustomer, ...current]);
+      setActiveCustomerId(nextCustomer.id);
+      setCopiedCustomerId(null);
+    });
+  }
+
+  async function login() {
+    const cleanName = loginName.trim();
+    if (!cleanName) return;
+    setAuthError(null);
+    try {
+      const payload = (await fetch(`${apiBaseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: cleanName })
+      }).then((result) => result.json())) as { token: string; user: AuthUser };
+      localStorage.setItem("ai-house-auth-token", payload.token);
+      setAuthToken(payload.token);
+      setUser(payload.user);
+    } catch {
+      setAuthError("登录失败，请稍后重试。");
+    }
+  }
+
+  function logout() {
+    localStorage.removeItem("ai-house-auth-token");
+    setAuthToken(null);
+    setUser(null);
+    setCustomers([]);
+    setActiveCustomerId(null);
+  }
+
+  if (!authToken || !user) {
+    return (
+      <main className="app-shell login-shell">
+        <section className="login-card">
+          <Sparkles size={28} />
+          <h1>运东 Ai 找房助手</h1>
+          <p>输入客服姓名进入个人客户队列。MVP 暂不做用户组和复杂权限。</p>
+          <input
+            value={loginName}
+            onChange={(event) => setLoginName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void login();
+            }}
+            placeholder="客服姓名，例如：小陈"
+          />
+          {authError ? <span className="login-error">{authError}</span> : null}
+          <button className="secondary-button" onClick={login} disabled={!loginName.trim()}>
+            登录
+          </button>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -194,10 +344,14 @@ function App() {
       <section className="topbar">
         <div>
           <h1>运东 Ai 找房助手</h1>
+          <p className="user-line">当前客服：{user.name}</p>
         </div>
-        <div className="status-pill">
-          <span />
-          {health ? `MCP ${health.mcpMode} · ${health.llmMode === "bailian" ? health.llmModel : "local mock"}` : "连接中"}
+        <div className="topbar-actions">
+          <div className="status-pill">
+            <span />
+            {health ? `MCP ${health.mcpMode} · ${health.llmMode === "bailian" ? health.llmModel : "local mock"}` : "连接中"}
+          </div>
+          <button className="ghost-button" onClick={logout}>退出</button>
         </div>
       </section>
 
