@@ -123,6 +123,13 @@ const welcomeMessage: ChatMessage = {
   text: "你好，我是运东 Ai 找房助手。把客户的区域、预算、户型发给我，我会先查严格匹配，没房源时再按周边距离和预算策略扩圈。"
 };
 
+function createClientId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function mapStoredSession(session: StoredCustomerSession): CustomerSession {
   return {
     id: session.id,
@@ -244,7 +251,7 @@ function App() {
     if (!trimmedMessage || loadingCustomerId) return;
 
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: createClientId(),
       role: "user",
       text: trimmedMessage
     };
@@ -282,7 +289,7 @@ function App() {
                 messages: [
                   ...customer.messages,
                   {
-                    id: crypto.randomUUID(),
+                    id: createClientId(),
                     role: "assistant",
                     text: buildAssistantMessage(nextResponse)
                   }
