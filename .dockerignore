@@ -1,0 +1,13 @@
+node_modules
+apps/*/node_modules
+packages/*/node_modules
+apps/web/dist
+apps/server/dist
+packages/shared/dist
+dist
+dist-types
+.data
+.env
+.git
+*.log
+*.tsbuildinfo

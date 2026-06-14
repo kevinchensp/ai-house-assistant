@@ -1,0 +1,71 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create release archive
+        run: |
+          tar \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='apps/*/node_modules' \
+            --exclude='packages/*/node_modules' \
+            --exclude='apps/web/dist' \
+            --exclude='apps/server/dist' \
+            --exclude='packages/shared/dist' \
+            --exclude='.data' \
+            --exclude='.env' \
+            -czf ai-house-assistant.tar.gz .
+
+      - name: Upload release archive
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: ai-house-assistant.tar.gz
+          target: /tmp
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -e
+            APP_PARENT="/www/wwwroot/ai-house-assistant"
+            APP_DIR="$APP_PARENT/ai-house-assistant"
+            mkdir -p "$APP_DIR"
+            if [ -f "$APP_DIR/.env" ]; then
+              cp "$APP_DIR/.env" /tmp/ai-house-assistant.env.backup
+            fi
+            tar -xzf /tmp/ai-house-assistant.tar.gz -C "$APP_DIR"
+            if [ -f /tmp/ai-house-assistant.env.backup ]; then
+              mv /tmp/ai-house-assistant.env.backup "$APP_DIR/.env"
+            elif [ ! -f "$APP_DIR/.env" ] && [ -f "$APP_DIR/.env.example" ]; then
+              cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+            fi
+            cd "$APP_DIR"
+            if command -v docker compose >/dev/null 2>&1; then
+              docker compose -f docker-compose.bt.yml down --remove-orphans
+              docker image rm ai-house-assistant-app:latest || true
+              docker compose -f docker-compose.bt.yml up -d --build
+            else
+              docker-compose -f docker-compose.bt.yml down --remove-orphans
+              docker image rm ai-house-assistant-app:latest || true
+              docker-compose -f docker-compose.bt.yml up -d --build
+            fi
+            rm -f /tmp/ai-house-assistant.tar.gz

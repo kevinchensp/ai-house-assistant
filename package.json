@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @ai-house-assistant/server",
     "dev:web": "npm run dev --workspace @ai-house-assistant/web",
-    "build": "npm run build --workspaces",
+    "build": "npm run build --workspace @ai-house-assistant/shared && npm run build --workspace @ai-house-assistant/server && npm run build --workspace @ai-house-assistant/web",
     "test": "vitest run",
     "typecheck": "tsc -b"
   },

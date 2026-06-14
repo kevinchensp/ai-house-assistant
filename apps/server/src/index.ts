@@ -1,6 +1,9 @@
 import cors from "cors";
 import { config as loadDotenv } from "dotenv";
 import express from "express";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { LocationSchema } from "@ai-house-assistant/shared";
 import { createAssistant } from "./assistant";
 import type { ChatResponse } from "./assistant";
@@ -143,6 +146,14 @@ app.post("/api/ai-house-assistant/chat", async (request, response, next) => {
 app.get("/api/ai-house-assistant/events", (_request, response) => {
   response.json({ events: eventLogger.all() });
 });
+
+const webDistPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+if (existsSync(webDistPath)) {
+  app.use(express.static(webDistPath));
+  app.get(/^\/(?!api\/).*/, (_request, response) => {
+    response.sendFile(path.join(webDistPath, "index.html"));
+  });
+}
 
 app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   const status = error instanceof Error && "status" in error ? Number((error as Error & { status: number }).status) : 500;

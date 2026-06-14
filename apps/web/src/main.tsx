@@ -60,7 +60,7 @@ type ChatResponse = {
   };
 };
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3101";
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:3101" : "");
 const amapWebMapKey = import.meta.env.VITE_AMAP_WEB_MAP_KEY ?? "";
 const amapSecurityJsCode = import.meta.env.VITE_AMAP_SECURITY_JS_CODE ?? "";
 
