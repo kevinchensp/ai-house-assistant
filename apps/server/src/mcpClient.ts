@@ -67,9 +67,14 @@ export class McpClient {
     return parseMcpRows(result).map(normalizeHouse).filter((house): house is House => house !== null);
   }
 
+  async searchHousesGeo(args: Record<string, unknown>): Promise<House[]> {
+    const result = await this.callTool("search_houses_geo", args);
+    return parseMcpRows(result).map(normalizeHouse).filter((house): house is House => house !== null);
+  }
+
   async getHouseDetailSafe(houseId: string): Promise<unknown> {
     try {
-      return await this.callTool("get_house_detail", { houseId });
+      return parseMcpObject(await this.callTool("get_house_detail", { houseId }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("house_images")) {
@@ -81,6 +86,11 @@ export class McpClient {
       }
       throw error;
     }
+  }
+
+  async getHouseImageUrlsSafe(houseId: string): Promise<string[]> {
+    const detail = await this.getHouseDetailSafe(houseId);
+    return extractImageUrls(detail);
   }
 }
 
@@ -94,8 +104,18 @@ function parseMcpRows(result: unknown): unknown[] {
   return parsed.rows ?? [];
 }
 
+function parseMcpObject(result: unknown): unknown {
+  const content = (result as { content?: Array<{ type: string; text: string }> }).content;
+  const text = content?.find((item) => item.type === "text")?.text;
+  if (!text) {
+    return result;
+  }
+  return JSON.parse(text);
+}
+
 function normalizeHouse(row: unknown): House | null {
   const source = row as Record<string, unknown>;
+  const building = isRecord(source.building) ? source.building : {};
   const houseId = source.house_id ?? source.houseId;
   const buildingId = source.building_id ?? source.buildingId;
   if (typeof houseId !== "string" || typeof buildingId !== "string") {
@@ -116,7 +136,33 @@ function normalizeHouse(row: unknown): House | null {
     direction: String(source.direction ?? ""),
     status: Number(source.status ?? 0),
     updatedAt: String(source.updated_at ?? source.updatedAt ?? ""),
-    lng: source.lng === "" || source.lng === undefined ? null : Number(source.lng),
-    lat: source.lat === "" || source.lat === undefined ? null : Number(source.lat)
+    lng: toNullableNumber(source.lng ?? building.lng),
+    lat: toNullableNumber(source.lat ?? building.lat),
+    address: String(source.address ?? building.address ?? ""),
+    coverImageUrl: extractImageUrls(source)[0] ?? null
   };
+}
+
+function toNullableNumber(value: unknown): number | null {
+  if (value === "" || value === undefined || value === null) return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue !== 0 ? numberValue : null;
+}
+
+function extractImageUrls(value: unknown): string[] {
+  const source = value as Record<string, unknown>;
+  const images = source.images ?? source.image_urls ?? source.imageUrls;
+  if (!Array.isArray(images)) return [];
+  return images
+    .map((image) => {
+      if (typeof image === "string") return image;
+      if (!isRecord(image)) return null;
+      const url = image.url ?? image.image_url ?? image.imageUrl ?? image.src;
+      return typeof url === "string" && url.trim() ? url : null;
+    })
+    .filter((url): url is string => Boolean(url));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

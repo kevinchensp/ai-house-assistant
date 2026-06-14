@@ -1,12 +1,20 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import type { ChatResponse } from "./assistant";
+
+export type UserRole = "admin" | "agent";
 
 export type AppUser = {
   id: string;
   name: string;
+  phone: string;
+  passwordHash: string;
+  role: UserRole;
   createdAt: string;
 };
+
+export type PublicUser = Omit<AppUser, "passwordHash">;
 
 export type StoredMessage = {
   id: string;
@@ -46,24 +54,56 @@ const emptyStore = (): StoreData => ({
 export class JsonAppStore {
   constructor(private readonly filePath: string) {}
 
-  async upsertUserByName(name: string): Promise<AppUser> {
-    const cleanName = name.trim();
-    if (!cleanName) {
-      throw new Error("name is required");
-    }
-
+  async ensureAdminUser(): Promise<AppUser> {
     const data = await this.read();
-    const existing = data.users.find((user) => user.name === cleanName);
+    const existing = data.users.find((user) => user.phone === "admin");
     if (existing) return existing;
 
     const user: AppUser = {
-      id: crypto.randomUUID(),
-      name: cleanName,
+      id: randomUUID(),
+      name: "管理员",
+      phone: "admin",
+      passwordHash: hashPassword("admin"),
+      role: "admin",
       createdAt: new Date().toISOString()
     };
     data.users.push(user);
     await this.write(data);
     return user;
+  }
+
+  async createUser(input: { name: string; phone: string; password: string; role?: UserRole }): Promise<AppUser> {
+    const cleanName = input.name.trim();
+    const cleanPhone = input.phone.trim();
+    if (!cleanName) throw new Error("name is required");
+    if (!cleanPhone) throw new Error("phone is required");
+    if (input.password.length < 6) throw new Error("password must be at least 6 characters");
+
+    const data = await this.read();
+    if (data.users.some((user) => user.phone === cleanPhone)) {
+      const error = new Error("phone already exists");
+      (error as Error & { status?: number }).status = 409;
+      throw error;
+    }
+
+    const user: AppUser = {
+      id: randomUUID(),
+      name: cleanName,
+      phone: cleanPhone,
+      passwordHash: hashPassword(input.password),
+      role: input.role ?? "agent",
+      createdAt: new Date().toISOString()
+    };
+    data.users.push(user);
+    await this.write(data);
+    return user;
+  }
+
+  async findUserByPhone(phone: string): Promise<AppUser | null> {
+    const cleanPhone = phone.trim();
+    if (!cleanPhone) return null;
+    const data = await this.read();
+    return data.users.find((user) => user.phone === cleanPhone) ?? null;
   }
 
   async getUser(userId: string): Promise<AppUser> {
@@ -75,12 +115,17 @@ export class JsonAppStore {
     return user;
   }
 
+  async listUsers(): Promise<AppUser[]> {
+    const data = await this.read();
+    return [...data.users].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  }
+
   async createCustomerSession(ownerUserId: string, customerName: string): Promise<CustomerSessionView> {
     const data = await this.read();
     this.assertUserExists(data, ownerUserId);
     const now = new Date().toISOString();
     const session: StoredCustomerSession = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       ownerUserId,
       customerName: customerName.trim() || `客户 ${data.sessions.filter((item) => item.ownerUserId === ownerUserId).length + 1}`,
       status: "待输入需求",
@@ -132,7 +177,7 @@ export class JsonAppStore {
 
     const now = new Date().toISOString();
     const message: StoredMessage = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       sessionId,
       role,
       content,
@@ -158,7 +203,7 @@ export class JsonAppStore {
     session.lastMessageAt = now;
     session.updatedAt = now;
     data.messages.push({
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       sessionId,
       role: "assistant",
       content: assistantText,
@@ -169,7 +214,12 @@ export class JsonAppStore {
 
   private async read(): Promise<StoreData> {
     try {
-      return JSON.parse(await readFile(this.filePath, "utf8")) as StoreData;
+      const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<StoreData>;
+      return {
+        users: (parsed.users ?? []) as AppUser[],
+        sessions: parsed.sessions ?? [],
+        messages: parsed.messages ?? []
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return emptyStore();
@@ -190,9 +240,33 @@ export class JsonAppStore {
   }
 }
 
+export function toPublicUser(user: AppUser): PublicUser {
+  const { passwordHash: _passwordHash, ...publicUser } = user;
+  return publicUser;
+}
+
+export function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString("hex");
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return `scrypt$${salt}$${hash}`;
+}
+
+export function verifyPassword(password: string, passwordHash: string): boolean {
+  const [algorithm, salt, expectedHash] = passwordHash.split("$");
+  if (algorithm !== "scrypt" || !salt || !expectedHash) return false;
+  const actual = scryptSync(password, salt, 64);
+  const expected = Buffer.from(expectedHash, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 function deriveStatus(result: ChatResponse): string {
   if (result.followUpQuestion) {
     return `待补充：${result.requirement.missingRequiredSlots.join("、")}`;
+  }
+  if (result.consultation) {
+    if (result.answerMode === "price_range") return "已查询价格范围";
+    if (result.answerMode === "area_layout_availability") return "已查询空房";
+    return result.consultation.summary;
   }
   if (result.recommendations.length > 0) {
     return `已推荐 ${result.recommendations.length} 套`;

@@ -18,8 +18,8 @@ describe("JsonAppStore", () => {
   });
 
   it("isolates customer sessions by owner user", async () => {
-    const alice = await store.upsertUserByName("小陈");
-    const bob = await store.upsertUserByName("小李");
+    const alice = await store.createUser({ name: "小陈", phone: "13800000001", password: "123456" });
+    const bob = await store.createUser({ name: "小李", phone: "13800000002", password: "123456" });
     const aliceSession = await store.createCustomerSession(alice.id, "客户 1");
     await store.createCustomerSession(bob.id, "客户 2");
 
@@ -34,10 +34,21 @@ describe("JsonAppStore", () => {
   });
 
   it("rejects writes to sessions owned by another user", async () => {
-    const alice = await store.upsertUserByName("小陈");
-    const bob = await store.upsertUserByName("小李");
+    const alice = await store.createUser({ name: "小陈", phone: "13800000001", password: "123456" });
+    const bob = await store.createUser({ name: "小李", phone: "13800000002", password: "123456" });
     const aliceSession = await store.createCustomerSession(alice.id, "客户 1");
 
     await expect(store.addMessage(bob.id, aliceSession.id, "user", "越权写入")).rejects.toThrow("not found");
+  });
+
+  it("creates the default admin account once", async () => {
+    const firstAdmin = await store.ensureAdminUser();
+    const secondAdmin = await store.ensureAdminUser();
+    const users = await store.listUsers();
+
+    expect(firstAdmin.id).toBe(secondAdmin.id);
+    expect(firstAdmin.phone).toBe("admin");
+    expect(firstAdmin.role).toBe("admin");
+    expect(users).toHaveLength(1);
   });
 });

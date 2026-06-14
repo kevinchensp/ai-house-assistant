@@ -4,7 +4,7 @@ import {
   type RequirementExtraction,
   validateRequirementExtraction
 } from "@ai-house-assistant/shared";
-import type { RequirementExtractionProvider } from "./llmProvider";
+import type { AssistantIntent, RequirementExtractionProvider } from "./llmProvider";
 
 type BailianLlmProviderOptions = {
   apiKey: string;
@@ -34,7 +34,52 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
+  async extractAssistantIntent(input: string): Promise<AssistantIntent> {
+    const content = await this.chatJson([
+      {
+        role: "system",
+        content: [
+          "你是内部租房客服助手的意图路由器，只输出 JSON，不输出解释。",
+          "根据客服输入判断应该调用哪个能力 intent。",
+          "可选 type：recommend_houses, project_vacancy, area_layout_availability, price_range, distance_ranking。",
+          "recommend_houses：客户给位置/预算/户型，希望推荐具体房源。",
+          "project_vacancy：询问某项目、门店、楼栋还有什么空房。",
+          "area_layout_availability：询问某区域/商圈/街道有没有某户型，例如“花都狮岭有没有一房”。这类不需要预算。",
+          "price_range：询问某区域某户型价格范围、租金范围、价位。",
+          "distance_ranking：询问离地铁/目标点最近、按距离排序。",
+          "输出字段：type, confidence。project_vacancy 还要 projectName；其他咨询意图要 locationKeyword；涉及户型时输出 layout={bedroom,livingRoom}，未知填 null。"
+        ].join("\n")
+      },
+      { role: "user", content: input }
+    ]);
+    return normalizeAssistantIntent(parseJsonContent(content));
+  }
+
   async extractRequirement(input: string): Promise<RequirementExtraction> {
+    const content = await this.chatJson([
+      {
+        role: "system",
+        content: [
+          "你是内部租房客服助手的需求解析器，只输出 JSON，不输出解释。",
+          "把用户自然语言解析为 RequirementExtraction，字段必须完整。",
+          "location 需包含 raw, normalized, city, district, placeType, center, confidence；无法确认时为 null。",
+          "budget 需包含 target, min, max, confidence；例如 1000 左右可解析为 800-1200，九百以内解析为 max 900。",
+          "layout 需包含 bedroom, livingRoom, toilet, confidence；一房可设置 bedroom=1, livingRoom=null。",
+          "preferences 需包含 rentType, direction, minArea, moveInDate, features；未知填 null，features 用数组记录近地铁、带阳台、大单间等软偏好。",
+          "缺少位置、预算、户型时写入 missingRequiredSlots，并给 followUpQuestion。"
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: input
+      }
+    ]);
+
+    const extracted = normalizeModelRequirement(input, parseJsonContent(content));
+    return validateRequirementExtraction(repairLowConfidenceSlots(input, extracted));
+  }
+
+  private async chatJson(messages: Array<{ role: "system" | "user"; content: string }>): Promise<string> {
     const response = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -43,24 +88,7 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        messages: [
-          {
-            role: "system",
-            content: [
-              "你是内部租房客服助手的需求解析器，只输出 JSON，不输出解释。",
-              "把用户自然语言解析为 RequirementExtraction，字段必须完整。",
-              "location 需包含 raw, normalized, city, district, placeType, center, confidence；无法确认时为 null。",
-              "budget 需包含 target, min, max, confidence；例如 1000 左右可解析为 800-1200，九百以内解析为 max 900。",
-              "layout 需包含 bedroom, livingRoom, toilet, confidence；一房可设置 bedroom=1, livingRoom=null。",
-              "preferences 需包含 rentType, direction, minArea, moveInDate, features；未知填 null，features 用数组记录近地铁、带阳台、大单间等软偏好。",
-              "缺少位置、预算、户型时写入 missingRequiredSlots，并给 followUpQuestion。"
-            ].join("\n")
-          },
-          {
-            role: "user",
-            content: input
-          }
-        ],
+        messages,
         temperature: 0.1,
         response_format: { type: "json_object" }
       })
@@ -75,10 +103,29 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
     if (!content) {
       throw new Error("Bailian response did not include message content");
     }
-
-    const extracted = normalizeModelRequirement(input, parseJsonContent(content));
-    return validateRequirementExtraction(repairLowConfidenceSlots(input, extracted));
+    return content;
   }
+}
+
+function normalizeAssistantIntent(value: unknown): AssistantIntent {
+  const record = isRecord(value) ? value : {};
+  const type = getString(record.type);
+  const confidence = Math.max(0, Math.min(1, getNumber(record.confidence) ?? 0.5));
+  const layoutRecord = isRecord(record.layout) ? record.layout : {};
+  const layout = {
+    bedroom: getNullableNumber(layoutRecord.bedroom),
+    livingRoom: getNullableNumber(layoutRecord.livingRoom)
+  };
+  if (type === "project_vacancy") {
+    return { type, projectName: getString(record.projectName) ?? "", confidence };
+  }
+  if (type === "area_layout_availability" || type === "price_range") {
+    return { type, locationKeyword: getString(record.locationKeyword) ?? "", layout, confidence };
+  }
+  if (type === "distance_ranking") {
+    return { type, locationKeyword: getString(record.locationKeyword) ?? "", confidence };
+  }
+  return { type: "recommend_houses", confidence };
 }
 
 function parseJsonContent(content: string): unknown {

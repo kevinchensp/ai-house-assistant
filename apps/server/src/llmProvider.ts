@@ -9,9 +9,29 @@ import {
 } from "@ai-house-assistant/shared";
 import { extractRequirementByRules } from "./requirementRules";
 
-export type RequirementExtractionProvider = Pick<LlmProvider, "extractRequirement">;
+export type AssistantIntent =
+  | { type: "recommend_houses"; confidence: number }
+  | { type: "project_vacancy"; projectName: string; confidence: number }
+  | {
+      type: "area_layout_availability";
+      locationKeyword: string;
+      layout: { bedroom: number | null; livingRoom: number | null };
+      confidence: number;
+    }
+  | {
+      type: "price_range";
+      locationKeyword: string;
+      layout: { bedroom: number | null; livingRoom: number | null };
+      confidence: number;
+    }
+  | { type: "distance_ranking"; locationKeyword: string; confidence: number };
+
+export type RequirementExtractionProvider = Pick<LlmProvider, "extractRequirement"> & {
+  extractAssistantIntent?: (input: string, context?: Record<string, unknown>) => Promise<AssistantIntent>;
+};
 
 export type LlmProvider = {
+  extractAssistantIntent(input: string, context?: Record<string, unknown>): Promise<AssistantIntent>;
   extractRequirement(input: string, context?: Record<string, unknown>): Promise<RequirementExtraction>;
   generateSearchPlan(requirement: RequirementExtraction): Promise<SearchPlan>;
   generateRecommendation(requirement: RequirementExtraction, houses: RankedHouse[]): Promise<RankedHouse[]>;

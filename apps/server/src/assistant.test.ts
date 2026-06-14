@@ -100,6 +100,53 @@ describe("assistant", () => {
     expect(response.searchTrace).toEqual([]);
   });
 
+  it("does not accept a client POI that was inferred from a district-only location", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => []
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "黄埔",
+            normalized: "广州市黄埔区",
+            city: "广州",
+            district: "黄埔区",
+            placeType: "unknown",
+            center: null,
+            confidence: 0.86
+          },
+          budget: null,
+          layout: { bedroom: null, livingRoom: null, toilet: null, confidence: 0.2 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: ["budget", "layout"],
+          shouldAskFollowUp: true,
+          followUpQuestion: "请确认客户的预算、户型要求。"
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-huangpu-company-poi",
+      message: "黄埔有什么房源",
+      clientResolvedLocation: {
+        raw: "黄埔",
+        normalized: "广州信实翻译有限公司",
+        city: "广州",
+        district: "黄埔区",
+        placeType: "poi",
+        center: { lng: 113.456, lat: 23.166 },
+        confidence: 0.78
+      }
+    });
+
+    expect(response.requirement.location?.normalized).toBe("广州市黄埔区");
+    expect(response.requirement.missingRequiredSlots).toEqual(["location", "budget", "layout"]);
+    expect(response.followUpQuestion).toContain("具体位置");
+    expect(response.searchTrace).toEqual([]);
+  });
+
   it("recommends ranked fallback houses from MCP results", async () => {
     const assistant = createAssistant({
       mcpClient: {
@@ -142,6 +189,234 @@ describe("assistant", () => {
       rentPrice: 1000
     });
     expect(response.salesReply.text).toContain("东平附近暂时没看到完全匹配");
+  });
+
+  it("uses geo fallback and enriches recommendations with cover images", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcpClient = {
+      searchHouses: async (args: Record<string, unknown>) => {
+        calls.push({ tool: "search_houses", args });
+        return [];
+      },
+      searchHousesGeo: async (args: Record<string, unknown>) => {
+        calls.push({ tool: "search_houses_geo", args });
+        return [
+          {
+            houseId: "geo-1",
+            buildingId: "b-geo",
+            buildingName: "石井近地铁公寓",
+            houseNumber: "502",
+            rentPrice: 950,
+            deposit: 950,
+            bedroom: 1,
+            livingRoom: 0,
+            toilet: 1,
+            area: 30,
+            direction: "",
+            status: 0,
+            updatedAt: "2026-06-13T00:00:00.000Z",
+            lng: 113.2559,
+            lat: 23.2037
+          }
+        ];
+      },
+      getHouseImageUrlsSafe: async (houseId: string) => {
+        calls.push({ tool: "get_house_detail", args: { houseId } });
+        return ["https://img.example.com/geo-1.jpg"];
+      }
+    };
+    const assistant = createAssistant({
+      mcpClient,
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "白云石井",
+            normalized: "石井",
+            city: "广州",
+            district: "白云区",
+            placeType: "business_area",
+            center: { lng: 113.2558, lat: 23.2036 },
+            confidence: 0.84
+          },
+          budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-geo-images",
+      message: "帮我找白云石井一室，预算1000左右"
+    });
+
+    expect(response.searchTrace.map((step) => step.name)).toEqual(["strict_keyword", "geo_radius_fallback"]);
+    expect(calls[1]).toMatchObject({
+      tool: "search_houses_geo",
+      args: {
+        lng: 113.2558,
+        lat: 23.2036,
+        radiusMeters: 3000,
+        bedroom: 1,
+        minRent: 800,
+        maxRent: 1200
+      }
+    });
+    expect(response.recommendations[0]).toMatchObject({
+      houseId: "geo-1",
+      coverImageUrl: "https://img.example.com/geo-1.jpg"
+    });
+  });
+
+  it("resolves model-missing location with a location resolver before searching", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          calls.push({ tool: "search_houses", args });
+          return [];
+        },
+        searchHousesGeo: async (args) => {
+          calls.push({ tool: "search_houses_geo", args });
+          return [
+            {
+              houseId: "jiahe-1",
+              buildingId: "b-jiahe",
+              buildingName: "嘉禾望岗公寓",
+              houseNumber: "601",
+              rentPrice: 850,
+              deposit: 850,
+              bedroom: 1,
+              livingRoom: 0,
+              toilet: 1,
+              area: 28,
+              direction: "",
+              status: 0,
+              updatedAt: "2026-06-13T00:00:00.000Z",
+              lng: 113.2893,
+              lat: 23.2375
+            }
+          ];
+        }
+      },
+      locationResolver: {
+        resolve: async (query) => {
+          calls.push({ tool: "resolve_location", args: { query } });
+          return query === "嘉禾望岗"
+            ? {
+                raw: "嘉禾望岗",
+                normalized: "嘉禾望岗",
+                city: "广州",
+                district: "白云区",
+                placeType: "metro_station",
+                center: { lng: 113.289243, lat: 23.23746 },
+                confidence: 0.9
+              }
+            : null;
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: null,
+          budget: { target: 800, min: 640, max: 960, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: 0, toilet: null, confidence: 0.85 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: ["location"],
+          shouldAskFollowUp: true,
+          followUpQuestion: "请确认具体位置"
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-jiahe",
+      message: "白云嘉禾望岗一居室 800 左右"
+    });
+
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.requirement.location).toMatchObject({
+      normalized: "嘉禾望岗",
+      center: { lng: 113.289243, lat: 23.23746 }
+    });
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { tool: "resolve_location", args: { query: "嘉禾望岗" } },
+        expect.objectContaining({
+          tool: "search_houses_geo",
+          args: expect.objectContaining({ lng: 113.289243, lat: 23.23746 })
+        })
+      ])
+    );
+    expect(response.recommendations[0]).toMatchObject({ houseId: "jiahe-1" });
+  });
+
+  it("uses client resolved map location before asking follow-up", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => [],
+        searchHousesGeo: async (args) => {
+          calls.push(args);
+          return [
+            {
+              houseId: "client-jiahe",
+              buildingId: "b-client",
+              buildingName: "嘉禾望岗公寓",
+              houseNumber: "701",
+              rentPrice: 800,
+              deposit: 800,
+              bedroom: 1,
+              livingRoom: 0,
+              toilet: 1,
+              area: 26,
+              direction: "",
+              status: 0,
+              updatedAt: "2026-06-13T00:00:00.000Z",
+              lng: 113.2892,
+              lat: 23.2374
+            }
+          ];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: null,
+          budget: { target: 800, min: 640, max: 960, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: 0, toilet: null, confidence: 0.85 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: ["location"],
+          shouldAskFollowUp: true,
+          followUpQuestion: "请确认具体位置"
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-client-location",
+      message: "白云嘉禾望岗一居室 800 左右",
+      clientResolvedLocation: {
+        raw: "嘉禾望岗",
+        normalized: "嘉禾望岗",
+        city: "广州",
+        district: "白云区",
+        placeType: "metro_station",
+        center: { lng: 113.289243, lat: 23.23746 },
+        confidence: 0.88
+      }
+    });
+
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.requirement.location?.normalized).toBe("嘉禾望岗");
+    expect(calls[0]).toMatchObject({
+      lng: 113.289243,
+      lat: 23.23746
+    });
   });
 
   it("treats one-bedroom phrasing as enough layout information to search", async () => {
@@ -428,6 +703,235 @@ describe("assistant", () => {
     });
   });
 
+  it("does not recommend cross-city or coordinate-missing houses for a specific location", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          if (args.keyword !== undefined || Number(args.maxRent) < 1000) return [];
+          return [
+            {
+              houseId: "dongguan-no-coordinate",
+              buildingId: "dg1",
+              buildingName: "同庆09店大旺二期A栋",
+              houseNumber: "415",
+              rentPrice: 600,
+              deposit: 2100,
+              bedroom: 1,
+              livingRoom: 1,
+              toilet: 1,
+              area: 45,
+              direction: "",
+              status: 0,
+              updatedAt: "2026-06-12T00:00:00.000Z",
+              address: "肇庆高新区沙沥工业园交德四街10号",
+              lng: null,
+              lat: null
+            },
+            {
+              houseId: "huizhou-far",
+              buildingId: "hz1",
+              buildingName: "惠丰70店新城市场A栋",
+              houseNumber: "207",
+              rentPrice: 600,
+              deposit: 1200,
+              bedroom: 1,
+              livingRoom: 1,
+              toilet: 1,
+              area: 46,
+              direction: "",
+              status: 0,
+              updatedAt: "2026-06-12T00:00:00.000Z",
+              address: "惠康中路23号",
+              lng: 114.4126,
+              lat: 23.1115
+            },
+            {
+              houseId: "science-city-nearby",
+              buildingId: "gz1",
+              buildingName: "科学城公寓",
+              houseNumber: "101",
+              rentPrice: 800,
+              deposit: 1600,
+              bedroom: 1,
+              livingRoom: 0,
+              toilet: 1,
+              area: 32,
+              direction: "",
+              status: 0,
+              updatedAt: "2026-06-12T00:00:00.000Z",
+              address: "广州市黄埔区科学城",
+              lng: 113.455,
+              lat: 23.165
+            }
+          ];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "黄埔科学城",
+            normalized: "科学城中心(建设中)",
+            city: "广州",
+            district: "黄埔区",
+            placeType: "metro_station",
+            center: { lng: 113.459, lat: 23.167 },
+            confidence: 0.86
+          },
+          budget: { target: 800, min: 600, max: 1000, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.85 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-science-city-cross-city",
+      message: "黄埔科学城一居室 800"
+    });
+
+    expect(response.searchTrace.map((step) => step.name)).toContain("inventory_budget_fallback");
+    expect(response.recommendations.map((house) => house.houseId)).toEqual(["science-city-nearby"]);
+    expect(response.recommendations[0]?.distanceMeters).toBeGreaterThan(0);
+  });
+
+  it("answers project vacancy consultation with available houses", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          expect(args).toMatchObject({ keyword: "龙湖31店", status: 0 });
+          return [
+            {
+              houseId: "lh-1",
+              buildingId: "lh",
+              buildingName: "龙湖31店下沐A栋",
+              houseNumber: "A711",
+              rentPrice: 600,
+              deposit: 1200,
+              bedroom: 1,
+              livingRoom: 0,
+              toilet: 1,
+              area: 25,
+              direction: "",
+              status: 0,
+              updatedAt: "2026-06-12T00:00:00.000Z",
+              address: "下沐社区富民路16号",
+              lng: 113.459,
+              lat: 23.167
+            }
+          ];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-project-vacancy",
+      message: "龙湖31店还有什么空房？"
+    });
+
+    expect(response.answerMode).toBe("project_vacancy");
+    expect(response.consultation?.title).toContain("龙湖31店");
+    expect(response.recommendations).toHaveLength(1);
+    expect(response.salesReply.text).toContain("龙湖31店目前查到 1 套空房");
+  });
+
+  it("answers area layout price range consultation", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          expect(args).toMatchObject({ keyword: "永泰", bedroom: 1, status: 0 });
+          return [
+            buildTestHouse("yt-1", 780, "永泰公寓", 113.305, 23.226),
+            buildTestHouse("yt-2", 950, "永泰公寓", 113.306, 23.227),
+            buildTestHouse("yt-3", 1200, "永泰公寓", 113.307, 23.228)
+          ];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-price-range",
+      message: "白云永泰一居室的价格范围"
+    });
+
+    expect(response.answerMode).toBe("price_range");
+    expect(response.consultation?.metrics).toEqual(
+      expect.arrayContaining([
+        { label: "最低价", value: "780元" },
+        { label: "最高价", value: "1200元" },
+        { label: "样本数", value: "3套" }
+      ])
+    );
+    expect(response.salesReply.text).toContain("永泰一居室");
+    expect(response.salesReply.text).toContain("780-1200元");
+  });
+
+  it("answers distance ranking consultation for nearest metro houses", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHousesGeo: async (args) => {
+          expect(args).toMatchObject({ lng: 113.293204, lat: 23.225461, status: 0 });
+          return [
+            buildTestHouse("far", 1000, "远一点公寓", 113.303, 23.235),
+            buildTestHouse("near", 900, "近地铁公寓", 113.294, 23.226)
+          ];
+        },
+        searchHouses: async () => []
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-distance-ranking",
+      message: "白云东平离地铁最近的房源排序"
+    });
+
+    expect(response.answerMode).toBe("distance_ranking");
+    expect(response.recommendations.map((house) => house.houseId)).toEqual(["near", "far"]);
+    expect(response.salesReply.text).toContain("按距离东平由近到远");
+  });
+
+  it("uses model intent to answer area layout availability without requiring budget", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          expect(args).toMatchObject({ keyword: "花都狮岭", bedroom: 1, status: 0 });
+          return [
+            buildTestHouse("sl-1", 850, "狮岭合成公寓", 113.18, 23.45),
+            buildTestHouse("sl-2", 980, "狮岭市场公寓", 113.19, 23.46)
+          ];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractAssistantIntent: async () => ({
+          type: "area_layout_availability",
+          locationKeyword: "花都狮岭",
+          layout: { bedroom: 1, livingRoom: null },
+          confidence: 0.9
+        }),
+        extractRequirement: async () => {
+          throw new Error("should not require recommendation slots for availability consultation");
+        }
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-area-layout-availability",
+      message: "花都狮岭有没有一房"
+    });
+
+    expect(response.answerMode).toBe("area_layout_availability");
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.consultation?.summary).toContain("花都狮岭一居室目前查到 2 套空房");
+    expect(response.salesReply.text).toContain("花都狮岭一居室目前有 2 套空房");
+  });
+
   it("omits null optional filters before calling MCP", async () => {
     const calls: Record<string, unknown>[] = [];
     const assistant = createAssistant({
@@ -471,3 +975,23 @@ describe("assistant", () => {
     expect(calls[0]).not.toHaveProperty("livingRoom");
   });
 });
+
+function buildTestHouse(houseId: string, rentPrice: number, buildingName: string, lng: number, lat: number) {
+  return {
+    houseId,
+    buildingId: `${houseId}-building`,
+    buildingName,
+    houseNumber: "101",
+    rentPrice,
+    deposit: rentPrice * 2,
+    bedroom: 1,
+    livingRoom: 0,
+    toilet: 1,
+    area: 30,
+    direction: "",
+    status: 0,
+    updatedAt: "2026-06-12T00:00:00.000Z",
+    lng,
+    lat
+  };
+}

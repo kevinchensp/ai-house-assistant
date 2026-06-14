@@ -1,13 +1,15 @@
 import cors from "cors";
 import { config as loadDotenv } from "dotenv";
 import express from "express";
+import { LocationSchema } from "@ai-house-assistant/shared";
 import { createAssistant } from "./assistant";
 import type { ChatResponse } from "./assistant";
-import { JsonAppStore } from "./appStore";
-import { AuthService, requireUserId } from "./auth";
+import { JsonAppStore, toPublicUser } from "./appStore";
+import { AuthService, requireAdminUser, requireUserId } from "./auth";
 import { BailianLlmProvider } from "./bailianLlmProvider";
 import { loadConfig } from "./config";
 import { InMemoryEventLogger } from "./eventLogger";
+import { AmapLocationResolver } from "./locationResolver";
 import { MockLlmProvider } from "./llmProvider";
 import { McpClient } from "./mcpClient";
 import { MockMcpClient } from "./mockMcpClient";
@@ -18,6 +20,7 @@ const config = loadConfig();
 const app = express();
 const eventLogger = new InMemoryEventLogger();
 const store = new JsonAppStore(config.appDataPath);
+await store.ensureAdminUser();
 const authService = new AuthService(store);
 const mcpClient =
   config.mcpServerUrl && config.mcpAuthToken
@@ -30,7 +33,10 @@ const llmProvider = config.bailianApiKey
       model: config.bailianModel
     })
   : new MockLlmProvider();
-const assistant = createAssistant({ mcpClient, eventLogger, llmProvider });
+const locationResolver = config.amapWebServiceKey
+  ? new AmapLocationResolver({ apiKey: config.amapWebServiceKey, city: config.amapCity })
+  : undefined;
+const assistant = createAssistant({ mcpClient, eventLogger, llmProvider, locationResolver });
 
 app.use(cors());
 app.use(express.json());
@@ -40,19 +46,21 @@ app.get("/api/health", (_request, response) => {
     ok: true,
     mcpMode: config.mcpServerUrl && config.mcpAuthToken ? "remote" : "mock",
     llmMode: config.bailianApiKey ? "bailian" : "mock",
-    llmModel: config.bailianApiKey ? config.bailianModel : "local-mock"
+    llmModel: config.bailianApiKey ? config.bailianModel : "local-mock",
+    locationMode: config.amapWebServiceKey ? "amap" : "local"
   });
 });
 
 app.post("/api/auth/login", async (request, response, next) => {
   try {
-    const name = String(request.body?.name ?? "");
-    if (!name.trim()) {
-      response.status(400).json({ error: "name is required" });
+    const phone = String(request.body?.phone ?? "");
+    const password = String(request.body?.password ?? "");
+    if (!phone.trim() || !password) {
+      response.status(400).json({ error: "phone and password are required" });
       return;
     }
 
-    response.json(await authService.login(name));
+    response.json(await authService.login(phone, password));
   } catch (error) {
     next(error);
   }
@@ -61,7 +69,29 @@ app.post("/api/auth/login", async (request, response, next) => {
 app.get("/api/me", async (request, response, next) => {
   try {
     const userId = requireUserId(request, authService);
-    response.json({ user: await store.getUser(userId) });
+    response.json({ user: toPublicUser(await store.getUser(userId)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/users", async (request, response, next) => {
+  try {
+    await requireAdminUser(request, authService, store);
+    response.json({ users: (await store.listUsers()).map(toPublicUser) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/users", async (request, response, next) => {
+  try {
+    await requireAdminUser(request, authService, store);
+    const name = String(request.body?.name ?? "");
+    const phone = String(request.body?.phone ?? "");
+    const password = String(request.body?.password ?? "");
+    const user = await store.createUser({ name, phone, password, role: "agent" });
+    response.status(201).json({ user: toPublicUser(user) });
   } catch (error) {
     next(error);
   }
@@ -98,7 +128,11 @@ app.post("/api/ai-house-assistant/chat", async (request, response, next) => {
 
     await store.getCustomerSession(userId, sessionId);
     await store.addMessage(userId, sessionId, "user", message);
-    const result = await assistant.chat({ sessionId, message });
+    const clientResolvedLocation = LocationSchema.nullable()
+      .optional()
+      .catch(undefined)
+      .parse(request.body?.clientResolvedLocation);
+    const result = await assistant.chat({ sessionId, message, clientResolvedLocation });
     await store.saveAssistantResult(userId, sessionId, result, buildAssistantMessage(result));
     response.json(result);
   } catch (error) {
@@ -124,6 +158,9 @@ app.listen(config.port, () => {
 function buildAssistantMessage(result: ChatResponse): string {
   if (result.followUpQuestion) {
     return result.followUpQuestion;
+  }
+  if (result.consultation) {
+    return `${result.consultation.summary} 右侧已整理查询结果和可复制话术。`;
   }
   const traceText = result.searchTrace
     .map((step) => `${step.name === "strict_keyword" ? "精确匹配" : "周边扩圈"} ${step.resultCount} 套`)

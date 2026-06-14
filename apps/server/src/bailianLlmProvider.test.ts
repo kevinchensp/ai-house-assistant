@@ -2,6 +2,40 @@ import { describe, expect, test, vi } from "vitest";
 import { BailianLlmProvider } from "./bailianLlmProvider";
 
 describe("BailianLlmProvider", () => {
+  test("extracts assistant intent for availability consultation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                type: "area_layout_availability",
+                locationKeyword: "花都狮岭",
+                layout: { bedroom: 1, livingRoom: null },
+                confidence: 0.91
+              })
+            }
+          }
+        ]
+      })
+    });
+    const provider = new BailianLlmProvider({
+      apiKey: "test-key",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      model: "qwen-plus",
+      fetchFn: fetchMock
+    });
+
+    await expect(provider.extractAssistantIntent("花都狮岭有没有一房")).resolves.toEqual({
+      type: "area_layout_availability",
+      locationKeyword: "花都狮岭",
+      layout: { bedroom: 1, livingRoom: null },
+      confidence: 0.91
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).messages[0].content).toContain("intent");
+  });
+
   test("extracts a structured rental requirement through the compatible chat completion API", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

@@ -27,13 +27,15 @@ MVP 核心闭环：
 - [x] 设计 AI 后端接口：`POST /api/ai-house-assistant/chat`。
 - [x] 设计会话数据结构：session、message、recommendation、feedback。
 - [x] 实现 MCP Client，支持 HTTP JSON-RPC 调用。
-- [ ] 接入现有 MCP 工具：`search_houses`、`search_buildings`、`get_house_type_summary`。
+- [x] 接入现有 MCP 工具：`search_houses`、`search_buildings`、`get_house_type_summary`。
 - [x] 接入真实国内模型或公司模型网关，实现生产版 `LLMProvider`。
-- [ ] 修复或规避 `get_house_detail` 依赖 `house_images` 表导致失败的问题。
-- [ ] 确认楼栋表是否稳定提供 `lng` 和 `lat`。
+- [x] 修复或规避 `get_house_detail` 依赖 `house_images` 表导致失败的问题。
+- [x] 确认楼栋表是否稳定提供 `lng` 和 `lat`。
 - [x] 建立最小位置字典：广州高频地铁站、商圈、片区、重点楼栋。
 - [x] 实现最小位置解析：客户位置 -> 标准地点 -> 坐标 -> 置信度。
 - [x] 实现楼栋坐标距离排序。
+- [x] 接入高德前端地图，展示客户需求位置和推荐房源位置。
+- [x] 接入高德位置解析链路，支持前端 POI 解析结果传给后端。
 - [x] 实现需求抽取：位置、预算、户型、整租/合租、面积、朝向、入住时间。
 - [x] 实现预算规则：例如 `1000 左右` 默认转为 `800-1200`。
 - [x] 实现位置降级策略：严格位置 -> 周边距离 -> 地铁/商圈 -> 行政区。
@@ -52,8 +54,8 @@ MVP 核心闭环：
 ## P1：位置能力
 
 - [ ] 补充楼栋位置字段：行政区、街道、商圈、最近地铁站、距离地铁。
-- [ ] 新增 MCP 工具 `resolve_location`。
-- [ ] 新增 MCP 工具 `search_houses_geo`。
+- [x] 新增位置解析能力：高德 POI 解析 + 本地规则兜底。
+- [x] 新增 MCP 工具 `search_houses_geo`。
 - [ ] 扩充广州常用地铁站、商圈、片区的位置字典。
 - [ ] 实现地铁站扩圈：本站 -> 前后 1-3 站 -> 低换乘区域。
 - [ ] 实现商圈扩圈：商圈中心 -> 相邻商圈 -> 同街道/同板块。
@@ -93,8 +95,9 @@ MVP 核心闭环：
 
 ## 当前已知问题
 
-- `get_house_detail` 当前查询图片时会依赖 `house_images` 表；如果该表不存在，详情接口会失败。
-- 当前 `search_houses` 主要是关键词查询，无法可靠表达“东平附近”“地铁前后几站”等位置需求。
+- `get_house_detail` 当前可返回 `images` 字段；真实样本里可能为空，前端需要显示占位。
+- 当前已接入 `search_houses_geo` 做坐标半径检索；地铁前后几站仍需要后续地铁拓扑数据。
+- 前端地图展示和 POI 解析统一使用参考文件里的高德 JS Key + `securityJsCode`，通过 `pass-api.ibtmap.com` 加载；后端 REST POI 解析需要单独配置 `AMAP_WEB_SERVICE_KEY`。
 - 纯关键词降级会把“东平”过快扩大到“白云区”，需要地理化位置策略。
 - 模型工具调用能力可能因供应商不同而不稳定，MVP 应由后端控制 MCP 调用。
 - 已支持阿里云百炼 OpenAI-compatible 接口；如果模型调用失败或输出不合法，后端会回退到规则解析。

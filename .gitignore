@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-types/
 .env
+apps/web/.env.local
 .DS_Store
 *.log
 *.tsbuildinfo

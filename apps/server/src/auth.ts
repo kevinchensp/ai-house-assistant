@@ -1,5 +1,6 @@
 import type express from "express";
-import type { AppUser, JsonAppStore } from "./appStore";
+import type { AppUser, JsonAppStore, PublicUser } from "./appStore";
+import { toPublicUser, verifyPassword } from "./appStore";
 
 type AuthToken = {
   token: string;
@@ -11,11 +12,17 @@ export class AuthService {
 
   constructor(private readonly store: JsonAppStore) {}
 
-  async login(name: string): Promise<AuthToken & { user: AppUser }> {
-    const user = await this.store.upsertUserByName(name);
+  async login(phone: string, password: string): Promise<AuthToken & { user: PublicUser }> {
+    const user = await this.store.findUserByPhone(phone);
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      const error = new Error("invalid phone or password");
+      (error as Error & { status?: number }).status = 401;
+      throw error;
+    }
+
     const token = crypto.randomUUID();
     this.tokens.set(token, user.id);
-    return { token, userId: user.id, user };
+    return { token, userId: user.id, user: toPublicUser(user) };
   }
 
   getUserIdFromRequest(request: express.Request): string | null {
@@ -34,4 +41,18 @@ export function requireUserId(request: express.Request, authService: AuthService
     throw error;
   }
   return userId;
+}
+
+export async function requireAdminUser(
+  request: express.Request,
+  authService: AuthService,
+  store: JsonAppStore
+): Promise<AppUser> {
+  const user = await store.getUser(requireUserId(request, authService));
+  if (user.role !== "admin") {
+    const error = new Error("forbidden");
+    (error as Error & { status?: number }).status = 403;
+    throw error;
+  }
+  return user;
 }

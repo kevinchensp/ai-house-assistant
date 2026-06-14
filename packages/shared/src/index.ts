@@ -85,7 +85,9 @@ export const HouseSchema = z.object({
   status: z.number(),
   updatedAt: z.string(),
   lng: z.number().nullable(),
-  lat: z.number().nullable()
+  lat: z.number().nullable(),
+  address: z.string().optional(),
+  coverImageUrl: z.string().nullable().optional()
 });
 
 export type House = z.infer<typeof HouseSchema>;
