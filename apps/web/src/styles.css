@@ -141,11 +141,20 @@ h3 {
 }
 
 .login-card .brand-title {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   justify-content: center;
+  text-align: center;
+}
+
+.login-card .brand-title.stacked h1 {
+  max-width: 260px;
 }
 
 .login-card .brand-title img {
-  height: 46px;
+  height: 52px;
 }
 
 .login-card svg {
@@ -496,10 +505,39 @@ h3 {
   padding: 13px 15px;
 }
 
+.bubble p {
+  white-space: pre-wrap;
+}
+
 .chat-message.user .bubble {
   background: #173f35;
   border-color: #173f35;
   color: #fff;
+}
+
+.bubble-copy {
+  align-items: center;
+  background: rgba(237, 244, 234, 0.92);
+  border: 1px solid #d5e0ce;
+  border-radius: 999px;
+  color: #24493f;
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 30px;
+  height: 30px;
+  justify-content: center;
+  margin-bottom: 8px;
+  opacity: 0.78;
+  padding: 0;
+  transition: background 160ms ease, opacity 160ms ease, transform 160ms ease;
+  width: 30px;
+}
+
+.bubble-copy:hover,
+.bubble-copy.copied {
+  background: #e1eddb;
+  opacity: 1;
+  transform: translateY(-1px);
 }
 
 .typing {
@@ -531,14 +569,45 @@ h3 {
   border-top: 1px solid #d7dfcf;
   display: grid;
   gap: 10px;
+  grid-template-areas: "input send";
   grid-template-columns: minmax(0, 1fr) 52px;
   padding: 16px;
+}
+
+.composer.with-prompts {
+  grid-template-areas:
+    "help help"
+    "input send";
+}
+
+.quick-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  grid-area: help;
+  margin-bottom: -1px;
+}
+
+.quick-prompts button {
+  background: #edf4ea;
+  border: 1px solid #d5e0ce;
+  border-radius: 999px;
+  color: #24493f;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.quick-prompts button:hover {
+  background: #e1eddb;
+  border-color: #abc59f;
 }
 
 textarea {
   background: #fff;
   border: 1px solid #cfd8c8;
   border-radius: 8px;
+  grid-area: input;
   height: 92px;
   max-height: 160px;
   min-height: 92px;
@@ -568,6 +637,7 @@ textarea:focus {
 .send-button {
   background: #173f35;
   color: white;
+  grid-area: send;
   height: 52px;
   margin-bottom: 2px;
   width: 52px;

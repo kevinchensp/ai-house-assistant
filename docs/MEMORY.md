@@ -52,6 +52,13 @@ MVP 口径更新：
 如果无法识别位置，AI 应追问，不能猜坐标。
 ```
 
+当前规则口径：
+
+```text
+现有意图、追问、扩圈、地铁、排序和话术规则统一记录在 docs/RULES.md。
+后续调整规则时应同步更新该文档。
+```
+
 ## 关键架构决策
 
 前端不直接连接 MCP，也不直接连接模型。
@@ -110,6 +117,19 @@ get_house_type_summary
 ```
 
 已验证可以查询到楼栋和房源数据。
+
+当前已实现的客服咨询意图：
+
+```text
+recommend_houses：完整找房推荐
+project_vacancy：项目/楼栋空房
+area_inventory：区域库存概览
+metro_line_inventory：地铁线路沿线库存
+metro_station_inventory：具体地铁站附近库存
+area_layout_availability：区域 + 户型空房
+price_range：区域 + 户型价格范围
+distance_ranking：距离目标点排序
+```
 
 已知问题：
 
@@ -362,3 +382,4 @@ MCP 调用失败率 = mcp_failed 次数 / mcp_called 次数
 
 - MVP 方案：[docs/superpowers/specs/2026-06-12-ai-house-assistant-mvp-design.md](superpowers/specs/2026-06-12-ai-house-assistant-mvp-design.md)
 - TODO 清单：[docs/TODO.md](TODO.md)
+- 规则总表：[docs/RULES.md](RULES.md)

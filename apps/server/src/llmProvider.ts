@@ -12,6 +12,9 @@ import { extractRequirementByRules } from "./requirementRules";
 export type AssistantIntent =
   | { type: "recommend_houses"; confidence: number }
   | { type: "project_vacancy"; projectName: string; confidence: number }
+  | { type: "area_inventory"; locationKeyword: string; confidence: number }
+  | { type: "metro_line_inventory"; lineName: string; confidence: number }
+  | { type: "metro_station_inventory"; stationName: string; lineName: string | null; confidence: number }
   | {
       type: "area_layout_availability";
       locationKeyword: string;

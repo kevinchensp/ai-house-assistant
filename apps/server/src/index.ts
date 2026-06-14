@@ -170,15 +170,5 @@ function buildAssistantMessage(result: ChatResponse): string {
   if (result.followUpQuestion) {
     return result.followUpQuestion;
   }
-  if (result.consultation) {
-    return `${result.consultation.summary} 右侧已整理查询结果和可复制话术。`;
-  }
-  const traceText = result.searchTrace
-    .map((step) => `${step.name === "strict_keyword" ? "精确匹配" : "周边扩圈"} ${step.resultCount} 套`)
-    .join("，");
-  const topHouse = result.recommendations[0];
-  if (!topHouse) {
-    return "这组条件暂时没找到合适房源。我建议先问客户是否能接受周边位置或预算上浮。";
-  }
-  return `我查完了：${traceText}。优先推荐 ${topHouse.buildingName} ${topHouse.houseNumber}，${topHouse.bedroom}室${topHouse.livingRoom}厅，租金${topHouse.rentPrice}元。右侧已经整理好推荐卡片和可复制话术。`;
+  return result.salesReply.text;
 }

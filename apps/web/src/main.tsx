@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CheckCircle2, Copy, Home, MapPin, Plus, Send, ShieldCheck, Sparkles, ThumbsDown, Users } from "lucide-react";
 import logoUrl from "./assets/logo.png";
@@ -6,7 +6,15 @@ import "./styles.css";
 
 type ChatResponse = {
   sessionId: string;
-  answerMode?: "recommend_houses" | "project_vacancy" | "price_range" | "distance_ranking" | "area_layout_availability";
+  answerMode?:
+    | "recommend_houses"
+    | "project_vacancy"
+    | "area_inventory"
+    | "metro_line_inventory"
+    | "metro_station_inventory"
+    | "price_range"
+    | "distance_ranking"
+    | "area_layout_availability";
   requirement: {
     location: {
       raw: string;
@@ -130,6 +138,15 @@ function createClientId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const quickPrompts = [
+  "白云东平一室一厅，预算1000左右",
+  "永泰有什么房子",
+  "3号线沿线房源",
+  "3号线同和站房源",
+  "白云永泰一居室价格范围",
+  "龙湖31店还有什么空房"
+];
+
 function mapStoredSession(session: StoredCustomerSession): CustomerSession {
   return {
     id: session.id,
@@ -163,23 +180,24 @@ async function apiFetch(token: string, path: string, init: RequestInit = {}): Pr
 }
 
 function App() {
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [authToken, setAuthToken] = useState(() => localStorage.getItem("ai-house-auth-token"));
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [loginPhone, setLoginPhone] = useState("admin");
-  const [loginPassword, setLoginPassword] = useState("admin");
+  const [loginPhone, setLoginPhone] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<"workspace" | "admin">("workspace");
   const [customers, setCustomers] = useState<CustomerSession[]>([]);
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
   const [loadingCustomerId, setLoadingCustomerId] = useState<string | null>(null);
-  const [copiedCustomerId, setCopiedCustomerId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [recommendationView, setRecommendationView] = useState<"list" | "map">("list");
   const [workspaceFocus, setWorkspaceFocus] = useState<"chat" | "insights">("chat");
   const activeCustomer = customers.find((customer) => customer.id === activeCustomerId) ?? customers[0];
   const isLoading = loadingCustomerId === activeCustomer?.id;
-  const copied = copiedCustomerId === activeCustomer?.id;
   const response = activeCustomer?.response ?? null;
+  const showQuickPrompts = !activeCustomer?.messages.some((message) => message.role === "user");
 
   useEffect(() => {
     if (!activeCustomerId && customers[0]) {
@@ -268,7 +286,7 @@ function App() {
       )
     );
     setLoadingCustomerId(activeCustomer.id);
-    setCopiedCustomerId(null);
+    setCopiedMessageId(null);
     try {
       const clientResolvedLocation = await resolveClientLocation(trimmedMessage).catch(() => null);
       const result = await fetch(`${apiBaseUrl}/api/ai-house-assistant/chat`, {
@@ -277,6 +295,7 @@ function App() {
         body: JSON.stringify({ sessionId: activeCustomer.id, message: trimmedMessage, clientResolvedLocation })
       });
       const nextResponse = (await result.json()) as ChatResponse;
+      const assistantMessageId = createClientId();
       if (nextResponse.recommendations.length > 0 || nextResponse.consultation) {
         setWorkspaceFocus("insights");
       }
@@ -289,7 +308,7 @@ function App() {
                 messages: [
                   ...customer.messages,
                   {
-                    id: createClientId(),
+                    id: assistantMessageId,
                     role: "assistant",
                     text: buildAssistantMessage(nextResponse)
                   }
@@ -304,10 +323,9 @@ function App() {
     }
   }
 
-  async function copyReply() {
-    if (!response || !activeCustomer) return;
-    await navigator.clipboard.writeText(response.salesReply.text);
-    setCopiedCustomerId(activeCustomer.id);
+  async function copyChatMessage(message: ChatMessage) {
+    await navigator.clipboard.writeText(message.text);
+    setCopiedMessageId(message.id);
   }
 
   function updateDraft(value: string) {
@@ -315,6 +333,13 @@ function App() {
     setCustomers((current) =>
       current.map((customer) => (customer.id === activeCustomer.id ? { ...customer, draft: value } : customer))
     );
+  }
+
+  function useQuickPrompt(prompt: string) {
+    updateDraft(prompt);
+    requestAnimationFrame(() => {
+      composerRef.current?.focus();
+    });
   }
 
   function createCustomer() {
@@ -326,7 +351,7 @@ function App() {
       const nextCustomer = mapStoredSession((payload as { session: StoredCustomerSession }).session);
       setCustomers((current) => [nextCustomer, ...current]);
       setActiveCustomerId(nextCustomer.id);
-      setCopiedCustomerId(null);
+      setCopiedMessageId(null);
     });
   }
 
@@ -364,8 +389,8 @@ function App() {
     return (
       <main className="app-shell login-shell">
         <section className="login-card">
-          <BrandTitle compact={false} />
-          <p>使用手机号和密码登录。管理员账号用于开通客服账号，默认管理员：admin / admin。</p>
+          <BrandTitle compact={false} layout="stacked" />
+          <p>使用手机号和密码登录。管理员账号用于开通客服账号。</p>
           <input
             value={loginPhone}
             onChange={(event) => setLoginPhone(event.target.value)}
@@ -441,7 +466,7 @@ function App() {
                 key={customer.id}
                 onClick={() => {
                   setActiveCustomerId(customer.id);
-                  setCopiedCustomerId(null);
+                  setCopiedMessageId(null);
                   setWorkspaceFocus(customer.response?.recommendations.length || customer.response?.consultation ? "insights" : "chat");
                   setRecommendationView("list");
                 }}
@@ -465,6 +490,19 @@ function App() {
                 <div className="bubble">
                   <p>{chatMessage.text}</p>
                 </div>
+                {chatMessage.role === "assistant" && chatMessage.id !== welcomeMessage.id ? (
+                  <button
+                    className={`bubble-copy ${copiedMessageId === chatMessage.id ? "copied" : ""}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void copyChatMessage(chatMessage);
+                    }}
+                    title={copiedMessageId === chatMessage.id ? "已复制" : "复制回复"}
+                    aria-label={copiedMessageId === chatMessage.id ? "已复制回复" : "复制回复"}
+                  >
+                    <Copy size={15} />
+                  </button>
+                ) : null}
               </article>
             ))}
             {isLoading ? (
@@ -479,8 +517,18 @@ function App() {
             ) : null}
           </div>
 
-          <div className="composer">
+          <div className={`composer ${showQuickPrompts ? "with-prompts" : ""}`}>
+            {showQuickPrompts ? (
+              <div className="quick-prompts">
+                {quickPrompts.map((prompt) => (
+                  <button key={prompt} onClick={() => useQuickPrompt(prompt)} type="button">
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <textarea
+              ref={composerRef}
               value={activeCustomer?.draft ?? ""}
               onChange={(event) => updateDraft(event.target.value)}
               onKeyDown={(event) => {
@@ -550,18 +598,6 @@ function App() {
               onViewChange={setRecommendationView}
             />
           </section>
-
-          <section className="sidebar-section">
-            <div className="section-title">
-              <Copy size={18} />
-              <h2>客服话术</h2>
-            </div>
-            <pre>{response?.salesReply.text ?? "生成后可一键复制给客户。"}</pre>
-            <button className="secondary-button" onClick={copyReply} disabled={!response}>
-              <Copy size={16} />
-              {copied ? "已复制" : "复制话术"}
-            </button>
-          </section>
         </aside>
       </section>
       )}
@@ -569,9 +605,9 @@ function App() {
   );
 }
 
-function BrandTitle({ compact }: { compact: boolean }) {
+function BrandTitle({ compact, layout = "inline" }: { compact: boolean; layout?: "inline" | "stacked" }) {
   return (
-    <div className={`brand-title ${compact ? "compact" : ""}`}>
+    <div className={`brand-title ${compact ? "compact" : ""} ${layout === "stacked" ? "stacked" : ""}`}>
       <img src={logoUrl} alt="运东" />
       <h1>运东 Ai 找房助手</h1>
     </div>
@@ -688,7 +724,8 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
   const [mapError, setMapError] = useState<string | null>(null);
   const center = response.requirement.location?.center ?? null;
   const coordinateHouses = response.recommendations.filter(hasHouseCoordinate);
-  const nearHouses = center ? coordinateHouses.filter((house) => isHouseNearDemand(house)) : coordinateHouses;
+  const sortedCoordinateHouses = sortMapHouses(coordinateHouses);
+  const nearHouses = center ? sortedCoordinateHouses.filter((house) => isHouseNearDemand(house)) : sortedCoordinateHouses;
   const houses = nearHouses.slice(0, 8);
   const hiddenHouseCount = center ? coordinateHouses.length - nearHouses.length : 0;
   const [selectedHouseId, setSelectedHouseId] = useState<string | null>(houses[0]?.houseId ?? null);
@@ -837,7 +874,16 @@ function hasHouseCoordinate(house: RecommendedHouse): house is CoordinateHouse {
 }
 
 function isHouseNearDemand(house: RecommendedHouse): boolean {
-  return house.distanceMeters === undefined || house.distanceMeters === null || house.distanceMeters <= maxRecommendationMapDistanceMeters;
+  return typeof house.distanceMeters === "number" && Number.isFinite(house.distanceMeters) && house.distanceMeters <= maxRecommendationMapDistanceMeters;
+}
+
+function sortMapHouses(houses: CoordinateHouse[]): CoordinateHouse[] {
+  return [...houses].sort((a, b) => {
+    const aDistance = typeof a.distanceMeters === "number" && Number.isFinite(a.distanceMeters) ? a.distanceMeters : Number.MAX_SAFE_INTEGER;
+    const bDistance = typeof b.distanceMeters === "number" && Number.isFinite(b.distanceMeters) ? b.distanceMeters : Number.MAX_SAFE_INTEGER;
+    if (aDistance !== bDistance) return aDistance - bDistance;
+    return b.score - a.score;
+  });
 }
 
 function AdminPanel({ token }: { token: string }) {
@@ -1098,17 +1144,7 @@ function buildAssistantMessage(response: ChatResponse): string {
   if (response.followUpQuestion) {
     return response.followUpQuestion;
   }
-  if (response.consultation) {
-    return `${response.consultation.summary} 右侧已整理查询结果和可复制话术。`;
-  }
-  const traceText = response.searchTrace
-    .map((step) => `${step.name === "strict_keyword" ? "精确匹配" : "周边扩圈"} ${step.resultCount} 套`)
-    .join("，");
-  const topHouse = response.recommendations[0];
-  if (!topHouse) {
-    return "这组条件暂时没找到合适房源。我建议先问客户是否能接受周边位置或预算上浮。";
-  }
-  return `我查完了：${traceText}。优先推荐 ${topHouse.buildingName} ${topHouse.houseNumber}，${topHouse.bedroom}室${topHouse.livingRoom}厅，租金${topHouse.rentPrice}元。右侧已经整理好推荐卡片和可复制话术。`;
+  return response.salesReply.text;
 }
 
 function formatRequirementLayout(layout: ChatResponse["requirement"]["layout"]): string {

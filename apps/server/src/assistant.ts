@@ -43,7 +43,15 @@ export type SearchTraceStep = {
 
 export type ChatResponse = {
   sessionId: string;
-  answerMode: "recommend_houses" | "project_vacancy" | "price_range" | "distance_ranking" | "area_layout_availability";
+  answerMode:
+    | "recommend_houses"
+    | "project_vacancy"
+    | "area_inventory"
+    | "metro_line_inventory"
+    | "metro_station_inventory"
+    | "price_range"
+    | "distance_ranking"
+    | "area_layout_availability";
   requirement: RequirementExtraction;
   followUpQuestion: string | null;
   searchTrace: SearchTraceStep[];
@@ -62,9 +70,44 @@ export type ConsultationResult = {
 };
 
 const maxRecommendationDistanceMeters = 20000;
+const metroLineStations: Record<string, string[]> = {
+  "3号线": [
+    "机场北",
+    "机场南",
+    "高增",
+    "人和",
+    "龙归",
+    "嘉禾望岗",
+    "白云大道北",
+    "永泰",
+    "同和",
+    "京溪南方医院",
+    "梅花园",
+    "燕塘",
+    "林和西",
+    "体育西路",
+    "石牌桥",
+    "岗顶",
+    "华师",
+    "五山",
+    "天河客运站",
+    "广州塔",
+    "客村",
+    "大塘",
+    "沥滘",
+    "厦滘",
+    "大石",
+    "汉溪长隆",
+    "市桥",
+    "番禺广场"
+  ]
+};
 
 type ConsultationIntent =
   | { type: "project_vacancy"; projectName: string }
+  | { type: "area_inventory"; locationKeyword: string }
+  | { type: "metro_line_inventory"; lineName: string }
+  | { type: "metro_station_inventory"; stationName: string; lineName: string | null }
   | {
       type: "area_layout_availability";
       locationKeyword: string;
@@ -186,6 +229,23 @@ function normalizeAssistantIntent(intent: AssistantIntent): ConsultationIntent |
   if (intent.type === "project_vacancy") {
     return intent.projectName.trim() ? { type: "project_vacancy", projectName: intent.projectName.trim() } : null;
   }
+  if (intent.type === "area_inventory") {
+    return intent.locationKeyword.trim() ? { type: "area_inventory", locationKeyword: intent.locationKeyword.trim() } : null;
+  }
+  if (intent.type === "metro_line_inventory") {
+    return normalizeMetroLineName(intent.lineName)
+      ? { type: "metro_line_inventory", lineName: normalizeMetroLineName(intent.lineName) as string }
+      : null;
+  }
+  if (intent.type === "metro_station_inventory") {
+    const stationName = normalizeMetroStationName(intent.stationName);
+    if (!stationName) return null;
+    return {
+      type: "metro_station_inventory",
+      stationName,
+      lineName: normalizeMetroLineName(intent.lineName)
+    };
+  }
   if (intent.type === "area_layout_availability") {
     return intent.locationKeyword.trim()
       ? { type: "area_layout_availability", locationKeyword: intent.locationKeyword.trim(), layout: intent.layout }
@@ -203,9 +263,26 @@ function normalizeAssistantIntent(intent: AssistantIntent): ConsultationIntent |
 
 function detectConsultationIntent(message: string): ConsultationIntent | null {
   const compact = message.replace(/\s+/g, "");
+  const metroLineName = extractMetroLineName(compact);
+  const metroStationName = extractMetroStationName(compact, metroLineName);
+  if (metroStationName && /站/.test(compact)) {
+    return { type: "metro_station_inventory", stationName: metroStationName, lineName: metroLineName };
+  }
+  if (metroLineName && /沿线|沿途|地铁线|地铁沿线/.test(compact)) {
+    return { type: "metro_line_inventory", lineName: metroLineName };
+  }
+
   const projectMatch = compact.match(/^(.+?)(?:还有|有|剩)(?:什么|哪些|多少)?.*空房/);
   if (projectMatch?.[1] && !/(房源|房子)$/.test(projectMatch[1])) {
     return { type: "project_vacancy", projectName: projectMatch[1] };
+  }
+
+  if (/有什么(?:房子|房源|房|空房)|有哪些(?:房子|房源|房|空房)/.test(compact)) {
+    const layout = extractConsultationLayout(compact);
+    const locationKeyword = extractConsultationLocationKeyword(compact);
+    if (layout.bedroom === null && locationKeyword) {
+      return { type: "area_inventory", locationKeyword };
+    }
   }
 
   if (/(有没有|有无|还有没有|有吗).*(一房|一居室|一室|单间|两房|两室|三房|三室)/.test(compact)) {
@@ -239,6 +316,15 @@ async function handleConsultation(
   if (intent.type === "project_vacancy") {
     return handleProjectVacancy(dependencies, sessionId, intent);
   }
+  if (intent.type === "area_inventory") {
+    return handleAreaInventory(dependencies, sessionId, intent);
+  }
+  if (intent.type === "metro_line_inventory") {
+    return handleMetroLineInventory(dependencies, sessionId, intent);
+  }
+  if (intent.type === "metro_station_inventory") {
+    return handleMetroStationInventory(dependencies, sessionId, intent);
+  }
   if (intent.type === "area_layout_availability") {
     return handleAreaLayoutAvailability(dependencies, sessionId, intent);
   }
@@ -248,11 +334,153 @@ async function handleConsultation(
   return handleDistanceRanking(dependencies, sessionId, message, intent);
 }
 
+async function handleMetroStationInventory(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "metro_station_inventory" }>
+): Promise<ChatResponse> {
+  const center = await resolveConsultationCenter(dependencies, intent.stationName);
+  const args = { keyword: intent.stationName, status: 0, pageSize: 30 };
+  const houses = await callSearch(dependencies, sessionId, "metro_station_inventory", args);
+  const stationCenters = new Map<string, Coordinate>();
+  if (center) {
+    stationCenters.set(intent.stationName, center);
+  }
+  const houseStationMap = new Map(houses.map((house) => [house.houseId, intent.stationName]));
+  const recommendations = annotateMetroLineRecommendations(rankHouses(houses, {
+    budget: null,
+    layout: { bedroom: null, livingRoom: null, toilet: null },
+    center
+  }), houseStationMap, stationCenters).slice(0, 10);
+  const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
+  const stationLabel = `${intent.stationName}站`;
+  const consultation = {
+    title: `${stationLabel}附近空房`,
+    summary: recommendations.length
+      ? `${stationLabel}附近目前查到 ${recommendations.length} 套空房，已按距离优先排序。`
+      : `${stationLabel}附近当前暂未查到空房。`,
+    metrics: [
+      { label: "空房数", value: `${recommendations.length}套` },
+      { label: "价格范围", value: rentPrices.length ? `${Math.min(...rentPrices)}-${Math.max(...rentPrices)}元` : "暂无" },
+      { label: "查询站点", value: intent.lineName ? `${intent.lineName} ${stationLabel}` : stationLabel }
+    ]
+  };
+
+  return buildConsultationResponse({
+    sessionId,
+    answerMode: "metro_station_inventory",
+    consultation,
+    recommendations,
+    searchTrace: [{ name: "metro_station_inventory", arguments: args, resultCount: houses.length }],
+    salesReply: {
+      text: buildMetroStationInventoryReply(intent.stationName, recommendations),
+      nextAction: "copy_reply"
+    }
+  });
+}
+
+async function handleMetroLineInventory(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "metro_line_inventory" }>
+): Promise<ChatResponse> {
+  const stations = metroLineStations[intent.lineName] ?? [];
+  const stationKeywords = stations.length ? stations : [intent.lineName];
+  const houseMap = new Map<string, House>();
+  const houseStationMap = new Map<string, string>();
+  const searchTrace: SearchTraceStep[] = [];
+  const stationCenters = await resolveStationCenters(dependencies, stationKeywords);
+
+  for (const station of stationKeywords) {
+    const args = { keyword: station, status: 0, pageSize: 10 };
+    const houses = await callSearch(dependencies, sessionId, "metro_line_station_inventory", args);
+    searchTrace.push({ name: "metro_line_station_inventory", arguments: args, resultCount: houses.length });
+    for (const house of houses) {
+      houseMap.set(house.houseId, house);
+      if (!houseStationMap.has(house.houseId)) {
+        houseStationMap.set(house.houseId, station);
+      }
+    }
+  }
+
+  const recommendations = annotateMetroLineRecommendations(rankHouses(Array.from(houseMap.values()), {
+    budget: null,
+    layout: { bedroom: null, livingRoom: null, toilet: null },
+    center: null
+  }), houseStationMap, stationCenters).slice(0, 10);
+  const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
+  const consultation = {
+    title: `${intent.lineName}沿线空房概览`,
+    summary: recommendations.length
+      ? `${intent.lineName}沿线目前查到 ${recommendations.length} 套空房，覆盖 ${countMatchedStations(recommendations, stationKeywords)} 个站点关键词。`
+      : `${intent.lineName}沿线当前暂未查到空房。`,
+    metrics: [
+      { label: "空房数", value: `${recommendations.length}套` },
+      { label: "价格范围", value: rentPrices.length ? `${Math.min(...rentPrices)}-${Math.max(...rentPrices)}元` : "暂无" },
+      { label: "站点范围", value: stations.length ? `${stations[0]}-${stations.at(-1)}` : intent.lineName }
+    ]
+  };
+
+  return buildConsultationResponse({
+    sessionId,
+    answerMode: "metro_line_inventory",
+    consultation,
+    recommendations,
+    searchTrace,
+    salesReply: {
+      text: buildMetroLineInventoryReply(intent.lineName, recommendations),
+      nextAction: "copy_reply"
+    }
+  });
+}
+
+async function handleAreaInventory(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "area_inventory" }>
+): Promise<ChatResponse> {
+  const center = await resolveConsultationCenter(dependencies, intent.locationKeyword);
+  const args = { keyword: intent.locationKeyword, status: 0, pageSize: 30 };
+  const houses = await callSearch(dependencies, sessionId, "area_inventory", args);
+  const recommendations = rankHouses(houses, {
+    budget: null,
+    layout: { bedroom: null, livingRoom: null, toilet: null },
+    center
+  })
+    .sort((a, b) => compareDistanceThenScore(a, b))
+    .slice(0, 10);
+  const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
+  const consultation = {
+    title: `${intent.locationKeyword}空房概览`,
+    summary: recommendations.length
+      ? `${intent.locationKeyword}目前查到 ${recommendations.length} 套空房，可先按预算、户型继续筛选。`
+      : `${intent.locationKeyword}当前暂未查到空房。`,
+    metrics: [
+      { label: "空房数", value: `${recommendations.length}套` },
+      { label: "价格范围", value: rentPrices.length ? `${Math.min(...rentPrices)}-${Math.max(...rentPrices)}元` : "暂无" },
+      { label: "户型覆盖", value: formatLayoutCoverage(recommendations) }
+    ]
+  };
+
+  return buildConsultationResponse({
+    sessionId,
+    answerMode: "area_inventory",
+    consultation,
+    recommendations,
+    searchTrace: [{ name: "area_inventory", arguments: args, resultCount: houses.length }],
+    salesReply: {
+      text: buildAreaInventoryReply(intent.locationKeyword, recommendations),
+      nextAction: "copy_reply"
+    }
+  });
+}
+
 async function handleAreaLayoutAvailability(
   dependencies: AssistantDependencies,
   sessionId: string,
   intent: Extract<ConsultationIntent, { type: "area_layout_availability" }>
 ): Promise<ChatResponse> {
+  const center = await resolveConsultationCenter(dependencies, intent.locationKeyword);
   const args = {
     keyword: intent.locationKeyword,
     bedroom: intent.layout.bedroom,
@@ -264,8 +492,10 @@ async function handleAreaLayoutAvailability(
   const recommendations = rankHouses(houses, {
     budget: null,
     layout: { ...intent.layout, toilet: null },
-    center: null
-  }).slice(0, 10);
+    center
+  })
+    .sort((a, b) => compareDistanceThenScore(a, b))
+    .slice(0, 10);
   const layoutLabel = formatConsultationLayout(intent.layout);
   const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
   const minRent = rentPrices.length ? Math.min(...rentPrices) : null;
@@ -450,6 +680,32 @@ function buildConsultationResponse(args: {
   };
 }
 
+async function resolveConsultationCenter(
+  dependencies: AssistantDependencies,
+  locationKeyword: string
+): Promise<Coordinate | null> {
+  if (dependencies.locationResolver) {
+    try {
+      const location = await dependencies.locationResolver.resolve(locationKeyword);
+      if (location?.center) {
+        return location.center;
+      }
+    } catch {
+      // Fall back to the built-in dictionary if the external resolver is unavailable.
+    }
+  }
+  return resolveLocation(locationKeyword).center;
+}
+
+function compareDistanceThenScore(a: RankedHouse, b: RankedHouse): number {
+  if (a.distanceMeters !== null && b.distanceMeters !== null) {
+    return a.distanceMeters - b.distanceMeters;
+  }
+  if (a.distanceMeters !== null) return -1;
+  if (b.distanceMeters !== null) return 1;
+  return b.score - a.score;
+}
+
 async function resolveTurnRequirement(
   dependencies: AssistantDependencies,
   message: string,
@@ -600,10 +856,110 @@ function extractConsultationLocationKeyword(message: string): string | null {
   const cleaned = message
     .replace(/^(?:广州(?:市)?)?(?:白云区|白云|黄埔区|黄埔)?/, "")
     .replace(/一居室|一房|一室一厅|一室|单间|两房|两室|三房|三室|1室1厅|1室|2室|3室/g, "")
-    .replace(/价格范围|租金范围|价位|多少钱|离地铁最近|距离地铁最近|最近地铁|按距离|房源排序|房源|排序|的/g, "")
+    .replace(/价格范围|租金范围|价位|多少钱|离地铁最近|距离地铁最近|最近地铁|按距离|房源排序|有什么|有哪些|房源|房子|空房|排序|的/g, "")
     .replace(/[？?。,.，\s]/g, "")
     .trim();
   return cleaned.length >= 2 ? cleaned : null;
+}
+
+function extractMetroLineName(message: string): string | null {
+  const match = message.match(/(?:地铁)?([0-9一二三四五六七八九十]+)号线/);
+  return normalizeMetroLineName(match?.[1] ? `${match[1]}号线` : null);
+}
+
+function extractMetroStationName(message: string, lineName: string | null): string | null {
+  let cleaned = message;
+  if (lineName) {
+    cleaned = cleaned.replace(lineName, "");
+  }
+  cleaned = cleaned
+    .replace(/(?:地铁)?[0-9一二三四五六七八九十]+号线/g, "")
+    .replace(/附近|周边|房源|房子|空房|有哪些|有什么|查|找/g, "")
+    .replace(/[？?。,.，\s]/g, "");
+  const explicitStation = cleaned.match(/(.+?)站/);
+  const stationName = explicitStation?.[1] ?? cleaned;
+  return normalizeMetroStationName(stationName);
+}
+
+function normalizeMetroStationName(stationName: string | null | undefined): string | null {
+  if (!stationName) return null;
+  const normalized = stationName.trim().replace(/站$/, "");
+  return normalized.length >= 2 ? normalized : null;
+}
+
+function normalizeMetroLineName(lineName: string | null | undefined): string | null {
+  if (!lineName) return null;
+  const compact = lineName.trim().replace(/^地铁/, "");
+  const chineseNumbers: Record<string, string> = {
+    一号线: "1号线",
+    二号线: "2号线",
+    三号线: "3号线",
+    四号线: "4号线",
+    五号线: "5号线",
+    六号线: "6号线",
+    七号线: "7号线",
+    八号线: "8号线",
+    九号线: "9号线",
+    十号线: "10号线"
+  };
+  return chineseNumbers[compact] ?? compact;
+}
+
+function countMatchedStations(recommendations: RankedHouse[], stations: string[]): number {
+  const matched = new Set<string>();
+  for (const house of recommendations) {
+    const haystack = `${house.buildingName}${house.address ?? ""}`;
+    const station = stations.find((candidate) => haystack.includes(candidate));
+    if (station) {
+      matched.add(station);
+    }
+  }
+  return matched.size;
+}
+
+async function resolveStationCenters(
+  dependencies: AssistantDependencies,
+  stations: string[]
+): Promise<Map<string, Coordinate>> {
+  const centers = new Map<string, Coordinate>();
+  for (const station of stations) {
+    const center = await resolveConsultationCenter(dependencies, station);
+    if (center) {
+      centers.set(station, center);
+    }
+  }
+  return centers;
+}
+
+function annotateMetroLineRecommendations(
+  recommendations: RankedHouse[],
+  houseStationMap: Map<string, string>,
+  stationCenters: Map<string, Coordinate>
+): RankedHouse[] {
+  return recommendations
+    .map((house) => {
+      const station = houseStationMap.get(house.houseId) ?? findMatchedStation(house, Array.from(stationCenters.keys()));
+      if (!station) {
+        return house;
+      }
+      const center = stationCenters.get(station);
+      const stationDistance =
+        center && house.lng !== null && house.lat !== null
+          ? distanceMeters(center, { lng: house.lng, lat: house.lat })
+          : null;
+      const stationText = stationDistance !== null ? `靠近${station}站，约${formatDistance(stationDistance)}` : `靠近${station}站`;
+      return {
+        ...house,
+        distanceMeters: stationDistance ?? house.distanceMeters,
+        recommendationReason: `${stationText}，${house.recommendationReason}`
+      };
+    })
+    .sort((a, b) => compareDistanceThenScore(a, b));
+}
+
+function findMatchedStation(house: RankedHouse, stations: string[]): string | null {
+  const haystack = `${house.buildingName}${house.address ?? ""}`;
+  return stations.find((station) => haystack.includes(station)) ?? null;
 }
 
 function formatConsultationLayout(layout: { bedroom: number | null; livingRoom: number | null }): string {
@@ -636,6 +992,43 @@ function buildProjectVacancyReply(projectName: string, recommendations: RankedHo
   return `${projectName}目前查到 ${recommendations.length} 套空房：\n${lines.join("\n")}\n可以先把价格和户型最合适的发给客户确认。`;
 }
 
+function buildAreaInventoryReply(locationKeyword: string, recommendations: RankedHouse[]): string {
+  if (recommendations.length === 0) {
+    return `${locationKeyword}这边我暂时没看到合适空房。您方便的话可以告诉我预算和想看的户型，我再帮您往附近一起找找。`;
+  }
+  const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
+  const priceText = rentPrices.length ? `，价格大概 ${Math.min(...rentPrices)}-${Math.max(...rentPrices)}元` : "";
+  const lines = recommendations
+    .slice(0, 5)
+    .map((house, index) => `${index + 1}. ${house.buildingName} ${house.houseNumber}，${house.bedroom}室${house.livingRoom}厅，${house.area}平，${house.rentPrice}元`);
+  return `${locationKeyword}目前有 ${recommendations.length} 套空房${priceText}，您可以看下这几套：\n${lines.join("\n")}\n如果您有预算或户型偏好，我再帮您筛到更合适的。`;
+}
+
+function buildMetroLineInventoryReply(lineName: string, recommendations: RankedHouse[]): string {
+  if (recommendations.length === 0) {
+    return `${lineName}沿线我暂时没看到合适空房。您可以补充预算、户型或更想靠近的站点，我再帮您重点找。`;
+  }
+  const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
+  const priceText = rentPrices.length ? `，价格大概 ${Math.min(...rentPrices)}-${Math.max(...rentPrices)}元` : "";
+  const lines = recommendations
+    .slice(0, 5)
+    .map((house, index) => `${index + 1}. ${house.buildingName} ${house.houseNumber}，${house.bedroom}室${house.livingRoom}厅，${house.area}平，${house.rentPrice}元，${house.recommendationReason}`);
+  return `${lineName}沿线目前有 ${recommendations.length} 套空房${priceText}，您可以看下这几套：\n${lines.join("\n")}\n如果您更想靠近某个站点，我再帮您按站点距离筛一版。`;
+}
+
+function buildMetroStationInventoryReply(stationName: string, recommendations: RankedHouse[]): string {
+  const stationLabel = `${stationName}站`;
+  if (recommendations.length === 0) {
+    return `${stationLabel}附近我暂时没看到合适空房。您可以补充预算和户型，我再帮您往前后几个站一起看看。`;
+  }
+  const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
+  const priceText = rentPrices.length ? `，价格大概 ${Math.min(...rentPrices)}-${Math.max(...rentPrices)}元` : "";
+  const lines = recommendations
+    .slice(0, 5)
+    .map((house, index) => `${index + 1}. ${house.buildingName} ${house.houseNumber}，${house.bedroom}室${house.livingRoom}厅，${house.area}平，${house.rentPrice}元，${house.recommendationReason}`);
+  return `${stationLabel}附近目前有 ${recommendations.length} 套空房${priceText}，我按离地铁站近的优先排了：\n${lines.join("\n")}\n如果您有预算或户型要求，我再帮您筛到更精准。`;
+}
+
 function buildAvailabilityReply(locationKeyword: string, layoutLabel: string, recommendations: RankedHouse[]): string {
   if (recommendations.length === 0) {
     return `${locationKeyword}${layoutLabel}当前暂时没查到空房，可以帮客户看看周边位置或相近户型。`;
@@ -646,6 +1039,11 @@ function buildAvailabilityReply(locationKeyword: string, layoutLabel: string, re
     .slice(0, 3)
     .map((house, index) => `${index + 1}. ${house.buildingName} ${house.houseNumber}，${house.area}平，${house.rentPrice}元`);
   return `${locationKeyword}${layoutLabel}目前有 ${recommendations.length} 套空房${priceText}：\n${lines.join("\n")}\n可以先挑价格和位置合适的发给客户。`;
+}
+
+function formatLayoutCoverage(recommendations: RankedHouse[]): string {
+  const labels = Array.from(new Set(recommendations.map((house) => `${house.bedroom}室${house.livingRoom}厅`))).slice(0, 3);
+  return labels.length ? labels.join("、") : "暂无";
 }
 
 function formatDistance(distance: number): string {

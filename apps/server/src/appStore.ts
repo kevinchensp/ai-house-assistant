@@ -265,6 +265,9 @@ function deriveStatus(result: ChatResponse): string {
   }
   if (result.consultation) {
     if (result.answerMode === "price_range") return "已查询价格范围";
+    if (result.answerMode === "area_inventory") return "已查询区域空房";
+    if (result.answerMode === "metro_line_inventory") return "已查询地铁沿线";
+    if (result.answerMode === "metro_station_inventory") return "已查询地铁站点";
     if (result.answerMode === "area_layout_availability") return "已查询空房";
     return result.consultation.summary;
   }

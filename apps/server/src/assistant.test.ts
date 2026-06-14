@@ -8,6 +8,33 @@ describe("assistant", () => {
       mcpClient: {
         searchHouses: async () => []
       },
+      locationResolver: {
+        resolve: async (query) => {
+          if (query === "永泰") {
+            return {
+              raw: "永泰",
+              normalized: "永泰",
+              city: "广州",
+              district: "白云区",
+              placeType: "metro_station",
+              center: { lng: 113.3069, lat: 23.2202 },
+              confidence: 0.9
+            };
+          }
+          if (query === "同和") {
+            return {
+              raw: "同和",
+              normalized: "同和",
+              city: "广州",
+              district: "白云区",
+              placeType: "metro_station",
+              center: { lng: 113.326, lat: 23.197 },
+              confidence: 0.9
+            };
+          }
+          return null;
+        }
+      },
       eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
     });
 
@@ -839,6 +866,158 @@ describe("assistant", () => {
     expect(response.salesReply.text).toContain("龙湖31店目前查到 1 套空房");
   });
 
+  it("answers area inventory consultation without requiring budget or layout", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          expect(args).toMatchObject({ keyword: "永泰", status: 0 });
+          expect(args).not.toHaveProperty("bedroom");
+          return [
+            buildTestHouse("yt-room", 780, "永泰单间公寓", 113.306, 23.221),
+            buildTestHouse("yt-one", 1050, "永泰一房公寓", 113.307, 23.222),
+            buildTestHouse("yt-two", 1500, "永泰两房公寓", 113.308, 23.223)
+          ];
+        }
+      },
+      locationResolver: {
+        resolve: async (query) =>
+          query === "永泰"
+            ? {
+                raw: "永泰",
+                normalized: "永泰",
+                city: "广州",
+                district: "白云区",
+                placeType: "metro_station",
+                center: { lng: 113.3069, lat: 23.2202 },
+                confidence: 0.9
+              }
+            : null
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-area-inventory",
+      message: "永泰有什么房子"
+    });
+
+    expect(response.answerMode).toBe("area_inventory");
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.consultation?.summary).toContain("永泰目前查到 3 套空房");
+    expect(response.recommendations).toHaveLength(3);
+    expect(response.salesReply.text).toContain("永泰目前有 3 套空房");
+    expect(response.salesReply.text).toContain("您可以看下这几套");
+    expect(response.salesReply.text).not.toContain("我可以");
+    expect(response.salesReply.text).not.toContain("可先按预算、户型继续筛选");
+  });
+
+  it("answers metro line inventory by searching line stations", async () => {
+    const searchedKeywords: string[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          searchedKeywords.push(String(args.keyword));
+          if (args.keyword === "永泰") {
+            return [buildTestHouse("line-yt", 1200, "永泰沿线公寓", 113.306, 23.221)];
+          }
+          if (args.keyword === "同和") {
+            return [buildTestHouse("line-th", 1300, "同和沿线公寓", 113.326, 23.197)];
+          }
+          return [];
+        }
+      },
+      locationResolver: {
+        resolve: async (query) => {
+          if (query === "永泰") {
+            return {
+              raw: "永泰",
+              normalized: "永泰",
+              city: "广州",
+              district: "白云区",
+              placeType: "metro_station",
+              center: { lng: 113.3069, lat: 23.2202 },
+              confidence: 0.9
+            };
+          }
+          if (query === "同和") {
+            return {
+              raw: "同和",
+              normalized: "同和",
+              city: "广州",
+              district: "白云区",
+              placeType: "metro_station",
+              center: { lng: 113.326, lat: 23.197 },
+              confidence: 0.9
+            };
+          }
+          return null;
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-metro-line-inventory",
+      message: "3号线沿途的房源"
+    });
+
+    expect(response.answerMode).toBe("metro_line_inventory");
+    expect(searchedKeywords).toContain("永泰");
+    expect(searchedKeywords).toContain("同和");
+    expect(searchedKeywords).not.toEqual(["3号线"]);
+    expect(response.consultation?.summary).toContain("3号线沿线目前查到 2 套空房");
+    expect(response.recommendations[0]?.recommendationReason).toContain("靠近");
+    expect(response.recommendations[0]?.recommendationReason).toMatch(/约\d+米|约\d+\.\d公里/);
+    expect(response.salesReply.text).toContain("3号线沿线目前有 2 套空房");
+    expect(response.salesReply.text).toContain("靠近");
+    expect(response.salesReply.text).toContain("您可以看下这几套");
+    expect(response.salesReply.text).not.toContain("右侧");
+  });
+
+  it("answers specific metro station inventory without scanning the whole line", async () => {
+    const searchedKeywords: string[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          searchedKeywords.push(String(args.keyword));
+          if (args.keyword === "同和") {
+            return [
+              buildTestHouse("th-near", 1000, "同和站旁公寓", 113.3261, 23.1971),
+              buildTestHouse("th-far", 900, "同和远一点公寓", 113.33, 23.2)
+            ];
+          }
+          return [];
+        }
+      },
+      locationResolver: {
+        resolve: async (query) =>
+          query === "同和"
+            ? {
+                raw: "同和",
+                normalized: "同和",
+                city: "广州",
+                district: "白云区",
+                placeType: "metro_station",
+                center: { lng: 113.326, lat: 23.197 },
+                confidence: 0.9
+              }
+            : null
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-metro-station-inventory",
+      message: "3号线同和站房源"
+    });
+
+    expect(response.answerMode).toBe("metro_station_inventory");
+    expect(searchedKeywords).toEqual(["同和"]);
+    expect(response.recommendations.map((house) => house.houseId)).toEqual(["th-near", "th-far"]);
+    expect(response.recommendations[0]?.recommendationReason).toContain("靠近同和站");
+    expect(response.salesReply.text).toContain("同和站附近目前有 2 套空房");
+  });
+
   it("answers area layout price range consultation", async () => {
     const assistant = createAssistant({
       mcpClient: {
@@ -902,10 +1081,24 @@ describe("assistant", () => {
         searchHouses: async (args) => {
           expect(args).toMatchObject({ keyword: "花都狮岭", bedroom: 1, status: 0 });
           return [
-            buildTestHouse("sl-1", 850, "狮岭合成公寓", 113.18, 23.45),
-            buildTestHouse("sl-2", 980, "狮岭市场公寓", 113.19, 23.46)
+            buildTestHouse("sl-far", 850, "狮岭合成公寓", 113.19, 23.46),
+            buildTestHouse("sl-near", 980, "狮岭市场公寓", 113.1805, 23.4505)
           ];
         }
+      },
+      locationResolver: {
+        resolve: async (query) =>
+          query === "花都狮岭"
+            ? {
+                raw: "花都狮岭",
+                normalized: "狮岭",
+                city: "广州",
+                district: "花都区",
+                placeType: "business_area",
+                center: { lng: 113.18, lat: 23.45 },
+                confidence: 0.88
+              }
+            : null
       },
       eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
       llmProvider: {
@@ -929,6 +1122,8 @@ describe("assistant", () => {
     expect(response.answerMode).toBe("area_layout_availability");
     expect(response.followUpQuestion).toBeNull();
     expect(response.consultation?.summary).toContain("花都狮岭一居室目前查到 2 套空房");
+    expect(response.recommendations.map((house) => house.houseId)).toEqual(["sl-near", "sl-far"]);
+    expect(response.recommendations[0]?.distanceMeters).toBeGreaterThan(0);
     expect(response.salesReply.text).toContain("花都狮岭一居室目前有 2 套空房");
   });
 
