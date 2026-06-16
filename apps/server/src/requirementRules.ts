@@ -45,6 +45,9 @@ function extractFeatures(message: string): string[] {
   if (/近地铁|靠近地铁|地铁站|地铁口|离地铁近/.test(message)) features.push("近地铁");
   if (/阳台|带阳台|有阳台/.test(message)) features.push("带阳台");
   if (/大单间|大一点|大点|面积大|空间大/.test(message)) features.push("大单间");
+  if (/可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物/.test(message)) {
+    features.push("可养宠物");
+  }
   return features;
 }
 

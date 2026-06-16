@@ -163,6 +163,25 @@ export class JsonAppStore {
     };
   }
 
+  async renameCustomerSession(ownerUserId: string, sessionId: string, customerName: string): Promise<CustomerSessionView> {
+    const nextName = customerName.trim();
+    if (!nextName) {
+      throw new Error("customer name is required");
+    }
+    const data = await this.read();
+    const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
+    if (!session) {
+      throw new Error("customer session not found");
+    }
+    session.customerName = nextName;
+    session.updatedAt = new Date().toISOString();
+    await this.write(data);
+    return {
+      ...session,
+      messages: data.messages.filter((message) => message.sessionId === session.id)
+    };
+  }
+
   async addMessage(
     ownerUserId: string,
     sessionId: string,

@@ -41,6 +41,16 @@ describe("JsonAppStore", () => {
     await expect(store.addMessage(bob.id, aliceSession.id, "user", "越权写入")).rejects.toThrow("not found");
   });
 
+  it("renames customer sessions owned by the user", async () => {
+    const alice = await store.createUser({ name: "小陈", phone: "13800000001", password: "123456" });
+    const session = await store.createCustomerSession(alice.id, "客户 1");
+
+    const renamed = await store.renameCustomerSession(alice.id, session.id, "张先生");
+
+    expect(renamed.customerName).toBe("张先生");
+    await expect(store.renameCustomerSession(alice.id, session.id, " ")).rejects.toThrow("customer name is required");
+  });
+
   it("creates the default admin account once", async () => {
     const firstAdmin = await store.ensureAdminUser();
     const secondAdmin = await store.ensureAdminUser();

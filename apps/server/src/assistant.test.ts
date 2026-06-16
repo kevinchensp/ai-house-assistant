@@ -592,6 +592,127 @@ describe("assistant", () => {
     });
   });
 
+  it("adds pet preference to the existing requirement instead of treating it as nearby acceptance", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => {
+          return [buildTestHouse("pet-1", 1000, "东平宠物友好公寓", 113.35, 23.27)];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async (message) => {
+          if (message.includes("宠物")) {
+            return {
+              location: null,
+              budget: null,
+              layout: { bedroom: null, livingRoom: null, toilet: null, confidence: 0.1 },
+              preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+              missingRequiredSlots: ["location", "budget", "layout"],
+              shouldAskFollowUp: true,
+              followUpQuestion: "请问客户主要想看哪个区域、预算大概多少，以及户型要求是什么？"
+            };
+          }
+          return {
+            location: {
+              raw: "东平",
+              normalized: "东平",
+              city: "广州",
+              district: "白云区",
+              placeType: "metro_station",
+              center: { lng: 113.35, lat: 23.27 },
+              confidence: 0.9
+            },
+            budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+            layout: { bedroom: 1, livingRoom: 1, toilet: null, confidence: 0.9 },
+            preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+            missingRequiredSlots: [],
+            shouldAskFollowUp: false,
+            followUpQuestion: null
+          };
+        }
+      }
+    });
+
+    await assistant.chat({
+      sessionId: "thread-pet",
+      message: "白云东平一室一厅，预算1000左右"
+    });
+    const response = await assistant.chat({
+      sessionId: "thread-pet",
+      message: "可以养宠物"
+    });
+
+    expect(response.followUpQuestion).toBeNull();
+    expect(response.requirement.location?.normalized).toBe("东平");
+    expect(response.requirement.budget?.target).toBe(1000);
+    expect(response.requirement.layout).toMatchObject({ bedroom: 1, livingRoom: 1 });
+    expect(response.requirement.preferences.features).toContain("可养宠物");
+  });
+
+  it("keeps prior location when the model mistakes a pet preference for a location", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => {
+          return [buildTestHouse("pet-location-1", 1000, "东平宠物友好公寓", 113.35, 23.27)];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async (message) => {
+          if (message.includes("宠物")) {
+            return {
+              location: {
+                raw: "可以养宠物",
+                normalized: "可以养宠物",
+                city: "广州",
+                district: null,
+                placeType: "poi",
+                center: { lng: 113.2, lat: 23.1 },
+                confidence: 0.8
+              },
+              budget: null,
+              layout: { bedroom: null, livingRoom: null, toilet: null, confidence: 0.1 },
+              preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+              missingRequiredSlots: ["budget", "layout"],
+              shouldAskFollowUp: true,
+              followUpQuestion: "请问客户主要想看哪个区域、预算大概多少，以及户型要求是什么？"
+            };
+          }
+          return {
+            location: {
+              raw: "东平",
+              normalized: "东平",
+              city: "广州",
+              district: "白云区",
+              placeType: "metro_station",
+              center: { lng: 113.35, lat: 23.27 },
+              confidence: 0.9
+            },
+            budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+            layout: { bedroom: 1, livingRoom: 1, toilet: null, confidence: 0.9 },
+            preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+            missingRequiredSlots: [],
+            shouldAskFollowUp: false,
+            followUpQuestion: null
+          };
+        }
+      }
+    });
+
+    await assistant.chat({
+      sessionId: "thread-pet-location",
+      message: "白云东平一室一厅，预算1000左右"
+    });
+    const response = await assistant.chat({
+      sessionId: "thread-pet-location",
+      message: "可以养宠物"
+    });
+
+    expect(response.requirement.location?.normalized).toBe("东平");
+    expect(response.requirement.preferences.features).toContain("可养宠物");
+  });
+
   it("automatically widens budget fallback before asking the customer to compromise", async () => {
     const calls: Record<string, unknown>[] = [];
     const assistant = createAssistant({
@@ -864,6 +985,53 @@ describe("assistant", () => {
     expect(response.consultation?.title).toContain("龙湖31店");
     expect(response.recommendations).toHaveLength(1);
     expect(response.salesReply.text).toContain("龙湖31店目前查到 1 套空房");
+  });
+
+  it("keeps prior requirement summary when answering consultation questions", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          if (args.keyword === "龙湖31店") {
+            return [buildTestHouse("project-1", 980, "龙湖31店", 113.3, 23.22)];
+          }
+          return [buildTestHouse("recommend-1", 1000, "永泰公寓", 113.306, 23.221)];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "永泰",
+            normalized: "永泰",
+            city: "广州",
+            district: "白云区",
+            placeType: "metro_station",
+            center: { lng: 113.3069, lat: 23.2202 },
+            confidence: 0.9
+          },
+          budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.9 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    await assistant.chat({
+      sessionId: "s-consultation-summary-overlay",
+      message: "永泰一房，预算1000左右"
+    });
+    const response = await assistant.chat({
+      sessionId: "s-consultation-summary-overlay",
+      message: "龙湖31店还有什么空房"
+    });
+
+    expect(response.answerMode).toBe("project_vacancy");
+    expect(response.requirement.location?.normalized).toBe("永泰");
+    expect(response.requirement.budget?.target).toBe(1000);
+    expect(response.requirement.layout.bedroom).toBe(1);
   });
 
   it("answers area inventory consultation without requiring budget or layout", async () => {

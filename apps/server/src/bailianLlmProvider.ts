@@ -68,7 +68,7 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
           "location 需包含 raw, normalized, city, district, placeType, center, confidence；无法确认时为 null。",
           "budget 需包含 target, min, max, confidence；例如 1000 左右可解析为 800-1200，九百以内解析为 max 900。",
           "layout 需包含 bedroom, livingRoom, toilet, confidence；一房可设置 bedroom=1, livingRoom=null。",
-          "preferences 需包含 rentType, direction, minArea, moveInDate, features；未知填 null，features 用数组记录近地铁、带阳台、大单间等软偏好。",
+          "preferences 需包含 rentType, direction, minArea, moveInDate, features；未知填 null，features 用数组记录近地铁、带阳台、大单间、可养宠物等软偏好。",
           "缺少位置、预算、户型时写入 missingRequiredSlots，并给 followUpQuestion。"
         ].join("\n")
       },
@@ -244,6 +244,9 @@ function extractPreferenceFeatures(input: string): string[] {
   if (/近地铁|靠近地铁|地铁站|地铁口|离地铁近/.test(input)) features.push("近地铁");
   if (/阳台|带阳台|有阳台/.test(input)) features.push("带阳台");
   if (/大单间|大一点|大点|面积大|空间大/.test(input)) features.push("大单间");
+  if (/可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物/.test(input)) {
+    features.push("可养宠物");
+  }
   return features;
 }
 

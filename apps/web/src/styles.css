@@ -400,6 +400,11 @@ h3 {
   width: 100%;
 }
 
+.customer-card:focus-visible {
+  outline: 2px solid rgba(123, 157, 118, 0.6);
+  outline-offset: 2px;
+}
+
 .customer-card.active {
   background: #e8f2e5;
   border-color: #7b9d76;
@@ -413,10 +418,48 @@ h3 {
   justify-content: space-between;
 }
 
+.customer-card-title strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.customer-card-title input {
+  background: #fff;
+  border: 1px solid #abc59f;
+  border-radius: 7px;
+  color: #17211b;
+  flex: 1 1 auto;
+  min-width: 0;
+  outline: none;
+  padding: 5px 7px;
+}
+
 .customer-card-title span {
   color: #758070;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.rename-customer-button {
+  align-items: center;
+  background: rgba(237, 244, 234, 0.85);
+  border: 1px solid #d5e0ce;
+  border-radius: 999px;
+  color: #24493f;
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 26px;
+  height: 26px;
+  justify-content: center;
+  opacity: 0;
+  padding: 0;
+  width: 26px;
+}
+
+.customer-card:hover .rename-customer-button,
+.customer-card:focus-within .rename-customer-button {
+  opacity: 1;
 }
 
 .customer-card p {

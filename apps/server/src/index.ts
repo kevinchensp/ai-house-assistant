@@ -119,6 +119,16 @@ app.post("/api/customer-sessions", async (request, response, next) => {
   }
 });
 
+app.patch("/api/customer-sessions/:sessionId", async (request, response, next) => {
+  try {
+    const userId = requireUserId(request, authService);
+    const customerName = String(request.body?.customerName ?? "");
+    response.json({ session: await store.renameCustomerSession(userId, request.params.sessionId, customerName) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/ai-house-assistant/chat", async (request, response, next) => {
   try {
     const userId = requireUserId(request, authService);

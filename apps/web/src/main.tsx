@@ -1,6 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CheckCircle2, Copy, Home, MapPin, Plus, Send, ShieldCheck, Sparkles, ThumbsDown, Users } from "lucide-react";
+import {
+  CheckCircle2,
+  Copy,
+  Home,
+  MapPin,
+  Pencil,
+  Plus,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  ThumbsDown,
+  Users
+} from "lucide-react";
 import logoUrl from "./assets/logo.png";
 import "./styles.css";
 
@@ -97,6 +109,7 @@ type CustomerSession = {
   draft: string;
   messages: ChatMessage[];
   response: ChatResponse | null;
+  summaryRequirement: ChatResponse["requirement"] | null;
   updatedAt: number;
 };
 
@@ -160,6 +173,7 @@ function mapStoredSession(session: StoredCustomerSession): CustomerSession {
         }))
       : [welcomeMessage],
     response: session.latestResponse,
+    summaryRequirement: session.latestResponse?.requirement ?? null,
     updatedAt: Date.parse(session.updatedAt)
   };
 }
@@ -194,9 +208,12 @@ function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [recommendationView, setRecommendationView] = useState<"list" | "map">("list");
   const [workspaceFocus, setWorkspaceFocus] = useState<"chat" | "insights">("chat");
+  const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
+  const [editingCustomerName, setEditingCustomerName] = useState("");
   const activeCustomer = customers.find((customer) => customer.id === activeCustomerId) ?? customers[0];
   const isLoading = loadingCustomerId === activeCustomer?.id;
   const response = activeCustomer?.response ?? null;
+  const summaryRequirement = activeCustomer?.summaryRequirement ?? response?.requirement ?? null;
   const showQuickPrompts = !activeCustomer?.messages.some((message) => message.role === "user");
 
   useEffect(() => {
@@ -301,21 +318,7 @@ function App() {
       }
       setCustomers((current) =>
         current.map((customer) =>
-          customer.id === activeCustomer.id
-            ? {
-                ...customer,
-                response: nextResponse,
-                messages: [
-                  ...customer.messages,
-                  {
-                    id: assistantMessageId,
-                    role: "assistant",
-                    text: buildAssistantMessage(nextResponse)
-                  }
-                ],
-                updatedAt: Date.now()
-              }
-            : customer
+          customer.id === activeCustomer.id ? applyAssistantResponse(customer, nextResponse, assistantMessageId) : customer
         )
       );
     } finally {
@@ -352,7 +355,41 @@ function App() {
       setCustomers((current) => [nextCustomer, ...current]);
       setActiveCustomerId(nextCustomer.id);
       setCopiedMessageId(null);
+      setEditingCustomerId(null);
     });
+  }
+
+  function startRenamingCustomer(customer: CustomerSession) {
+    setEditingCustomerId(customer.id);
+    setEditingCustomerName(customer.name);
+  }
+
+  async function saveCustomerName(customerId: string) {
+    if (!authToken || editingCustomerId !== customerId) return;
+    const nextName = editingCustomerName.trim();
+    if (!nextName) {
+      setEditingCustomerId(null);
+      setEditingCustomerName("");
+      return;
+    }
+
+    const previousCustomers = customers;
+    setCustomers((current) =>
+      current.map((customer) =>
+        customer.id === customerId ? { ...customer, name: nextName, updatedAt: Date.now() } : customer
+      )
+    );
+    setEditingCustomerId(null);
+    setEditingCustomerName("");
+
+    try {
+      await apiFetch(authToken, `/api/customer-sessions/${customerId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ customerName: nextName })
+      });
+    } catch {
+      setCustomers(previousCustomers);
+    }
   }
 
   async function login() {
@@ -461,7 +498,7 @@ function App() {
 
           <div className="customer-list">
             {customers.map((customer) => (
-              <button
+              <article
                 className={`customer-card ${customer.id === activeCustomer?.id ? "active" : ""}`}
                 key={customer.id}
                 onClick={() => {
@@ -470,14 +507,51 @@ function App() {
                   setWorkspaceFocus(customer.response?.recommendations.length || customer.response?.consultation ? "insights" : "chat");
                   setRecommendationView("list");
                 }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setActiveCustomerId(customer.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
               >
                 <div className="customer-card-title">
-                  <strong>{customer.name}</strong>
+                  {editingCustomerId === customer.id ? (
+                    <input
+                      autoFocus
+                      value={editingCustomerName}
+                      onBlur={() => void saveCustomerName(customer.id)}
+                      onChange={(event) => setEditingCustomerName(event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Enter") void saveCustomerName(customer.id);
+                        if (event.key === "Escape") {
+                          setEditingCustomerId(null);
+                          setEditingCustomerName("");
+                        }
+                      }}
+                    />
+                  ) : (
+                    <strong>{customer.name}</strong>
+                  )}
                   <span>{formatUpdatedAt(customer.updatedAt)}</span>
+                  <button
+                    className="rename-customer-button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      startRenamingCustomer(customer);
+                    }}
+                    title="修改客户名称"
+                    type="button"
+                  >
+                    <Pencil size={13} />
+                  </button>
                 </div>
                 <p>{buildCustomerSummary(customer)}</p>
                 <small>{buildCustomerStatus(customer)}</small>
-              </button>
+              </article>
             ))}
           </div>
         </aside>
@@ -551,33 +625,29 @@ function App() {
               <MapPin size={18} />
               <h2>需求摘要</h2>
             </div>
-            {response ? (
+            {summaryRequirement ? (
               <div className="summary-band">
                 <div>
                   <span>位置</span>
-                  <strong>
-                    {response.requirement.missingRequiredSlots.includes("location")
-                      ? "待确认"
-                      : response.requirement.location?.normalized ?? "待确认"}
-                  </strong>
+                  <strong>{summaryRequirement.location?.normalized ?? "待确认"}</strong>
                 </div>
                 <div>
                   <span>预算</span>
                   <strong>
-                    {response.requirement.budget
-                      ? `${response.requirement.budget.min}-${response.requirement.budget.max}`
+                    {summaryRequirement.budget
+                      ? `${summaryRequirement.budget.min}-${summaryRequirement.budget.max}`
                       : "待确认"}
                   </strong>
                 </div>
                 <div>
                   <span>户型</span>
-                  <strong>{formatRequirementLayout(response.requirement.layout)}</strong>
+                  <strong>{formatRequirementLayout(summaryRequirement.layout)}</strong>
                 </div>
                 <div className="summary-wide">
                   <span>偏好</span>
-                  {buildPreferenceChips(response).length ? (
+                  {buildPreferenceChips(summaryRequirement).length ? (
                     <div className="preference-chips">
-                      {buildPreferenceChips(response).map((chip) => (
+                      {buildPreferenceChips(summaryRequirement).map((chip) => (
                         <strong key={chip}>{chip}</strong>
                       ))}
                     </div>
@@ -721,12 +791,14 @@ function HouseList({ houses }: { houses: ChatResponse["recommendations"] }) {
 
 function RecommendationMap({ response }: { response: ChatResponse }) {
   const mapRef = React.useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = React.useRef<AMapMap | null>(null);
+  const houseMarkerRefs = React.useRef<Map<string, AMapMarker>>(new Map());
   const [mapError, setMapError] = useState<string | null>(null);
   const center = response.requirement.location?.center ?? null;
   const coordinateHouses = response.recommendations.filter(hasHouseCoordinate);
   const sortedCoordinateHouses = sortMapHouses(coordinateHouses);
   const nearHouses = center ? sortedCoordinateHouses.filter((house) => isHouseNearDemand(house)) : sortedCoordinateHouses;
-  const houses = nearHouses.slice(0, 8);
+  const houses = nearHouses;
   const hiddenHouseCount = center ? coordinateHouses.length - nearHouses.length : 0;
   const [selectedHouseId, setSelectedHouseId] = useState<string | null>(houses[0]?.houseId ?? null);
   const selectedHouse = houses.find((house) => house.houseId === selectedHouseId) ?? houses[0] ?? null;
@@ -741,9 +813,15 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
     }
   }, [houses, selectedHouseId]);
 
+  function selectHouseOnMap(house: CoordinateHouse) {
+    setSelectedHouseId(house.houseId);
+    mapInstanceRef.current?.setCenter([house.lng, house.lat]);
+  }
+
   useEffect(() => {
     let disposed = false;
     let map: AMapMap | null = null;
+    const houseMarkerMap = new Map<string, AMapMarker>();
 
     async function renderMap() {
       if (!mapRef.current || !amapWebMapKey || (!center && !houses.length)) return;
@@ -776,11 +854,15 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
           map,
           position: [house.lng, house.lat],
           title: `${house.buildingName} ${house.houseNumber}`,
-          content: `<div class="map-marker-result-house ${house.houseId === selectedHouse?.houseId ? "active" : ""}"><span>${index + 1}</span><strong>${house.rentPrice}</strong></div>`,
+          content: buildMapHouseMarkerContent(house, index, house.houseId === selectedHouse?.houseId),
           zIndex: 10
         });
-        marker.on?.("click", () => setSelectedHouseId(house.houseId));
+        marker.on?.("click", () => selectHouseOnMap(house));
+        houseMarkerMap.set(house.houseId, marker);
       });
+      mapInstanceRef.current = map;
+      houseMarkerRefs.current = houseMarkerMap;
+      fitRecommendationMapView(AMap, map, center, houses, houseMarkerMap);
     }
 
     void renderMap().catch(() => {
@@ -789,9 +871,23 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
 
     return () => {
       disposed = true;
+      if (mapInstanceRef.current === map) {
+        mapInstanceRef.current = null;
+      }
+      if (houseMarkerRefs.current === houseMarkerMap) {
+        houseMarkerRefs.current = new Map();
+      }
       map?.destroy();
     };
-  }, [center?.lng, center?.lat, houses, response.requirement.location?.normalized, selectedHouse?.houseId]);
+  }, [center?.lng, center?.lat, getMapHouseSignature(houses), response.requirement.location?.normalized]);
+
+  useEffect(() => {
+    houses.forEach((house, index) => {
+      houseMarkerRefs.current
+        .get(house.houseId)
+        ?.setContent(buildMapHouseMarkerContent(house, index, house.houseId === selectedHouse?.houseId));
+    });
+  }, [houses, selectedHouse?.houseId]);
 
   if (!amapWebMapKey) {
     return <div className="empty-state">配置 VITE_AMAP_WEB_MAP_KEY 后显示房源地图。</div>;
@@ -829,7 +925,7 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
           <article
             className={house.houseId === selectedHouse?.houseId ? "active" : ""}
             key={house.houseId}
-            onClick={() => setSelectedHouseId(house.houseId)}
+            onClick={() => selectHouseOnMap(house)}
           >
             <span>{index + 1}</span>
             <div>
@@ -884,6 +980,54 @@ function sortMapHouses(houses: CoordinateHouse[]): CoordinateHouse[] {
     if (aDistance !== bDistance) return aDistance - bDistance;
     return b.score - a.score;
   });
+}
+
+function buildMapHouseMarkerContent(house: CoordinateHouse, index: number, isActive: boolean): string {
+  return `<div class="map-marker-result-house ${isActive ? "active" : ""}"><span>${index + 1}</span><strong>${house.rentPrice}</strong></div>`;
+}
+
+function getMapHouseSignature(houses: CoordinateHouse[]): string {
+  return houses
+    .map((house) => `${house.houseId}:${house.lng.toFixed(6)},${house.lat.toFixed(6)}:${house.rentPrice}`)
+    .join("|");
+}
+
+function fitRecommendationMapView(
+  AMap: AMapGlobal,
+  map: AMapMap,
+  center: ClientResolvedLocation["center"] | null,
+  houses: CoordinateHouse[],
+  houseMarkers: Map<string, AMapMarker>
+) {
+  if (center && AMap.Bounds) {
+    if (!houses.length) {
+      map.setZoomAndCenter?.(14, [center.lng, center.lat]);
+      map.setCenter([center.lng, center.lat]);
+      return;
+    }
+
+    const maxLngDelta = Math.max(...houses.map((house) => Math.abs(house.lng - center.lng)), 0.006);
+    const maxLatDelta = Math.max(...houses.map((house) => Math.abs(house.lat - center.lat)), 0.006);
+    const lngPadding = Math.max(maxLngDelta * 0.18, 0.003);
+    const latPadding = Math.max(maxLatDelta * 0.18, 0.003);
+    const bounds = new AMap.Bounds(
+      [center.lng - maxLngDelta - lngPadding, center.lat - maxLatDelta - latPadding],
+      [center.lng + maxLngDelta + lngPadding, center.lat + maxLatDelta + latPadding]
+    );
+    map.setBounds?.(bounds, false, [44, 44, 44, 44]);
+    return;
+  }
+
+  const markers = Array.from(houseMarkers.values());
+  if (markers.length > 1) {
+    map.setFitView?.(markers, false, [44, 44, 44, 44], 15);
+    return;
+  }
+  const firstHouse = houses[0];
+  if (firstHouse) {
+    map.setZoomAndCenter?.(14, [firstHouse.lng, firstHouse.lat]);
+    map.setCenter([firstHouse.lng, firstHouse.lat]);
+  }
 }
 
 function AdminPanel({ token }: { token: string }) {
@@ -983,13 +1127,21 @@ function AdminPanel({ token }: { token: string }) {
 
 type AMapMap = {
   destroy(): void;
+  setBounds?(bounds: AMapBounds, immediately?: boolean, avoid?: number[]): void;
+  setCenter(center: [number, number]): void;
+  setFitView?(overlays?: AMapMarker[], immediately?: boolean, avoid?: number[], maxZoom?: number): void;
+  setZoomAndCenter?(zoom: number, center: [number, number]): void;
 };
 
 type AMapMarker = {
   on?(eventName: "click", callback: () => void): void;
+  setContent(content: string): void;
 };
 
+type AMapBounds = unknown;
+
 type AMapGlobal = {
+  Bounds?: new (southWest: [number, number], northEast: [number, number]) => AMapBounds;
   Map: new (container: HTMLDivElement, options: Record<string, unknown>) => AMapMap;
   Marker: new (options: Record<string, unknown>) => AMapMarker;
   plugin(plugins: string[], callback: () => void): void;
@@ -1102,7 +1254,7 @@ function searchAmapPoi(
 function extractClientLocationCandidates(message: string): string[] {
   const normalized = message
     .replace(/\d{3,5}\s*(?:元|块|左右|以内|附近|上下)?/g, " ")
-    .replace(/一居室|一房|一室一厅|一室|单间|大单间|两房|两室|三房|三室|预算|帮我找|客户想要|客户要|想找|找个|房子|房源|靠近地铁|近地铁|最好|有阳台|带阳台/g, " ")
+    .replace(/一居室|一房|一室一厅|一室|单间|大单间|两房|两室|三房|三室|预算|帮我找|客户想要|客户要|想找|找个|房子|房源|靠近地铁|近地铁|最好|有阳台|带阳台|可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物/g, " ")
     .replace(/[，。,.\s]+/g, " ")
     .trim();
   const candidates = new Set<string>();
@@ -1147,6 +1299,88 @@ function buildAssistantMessage(response: ChatResponse): string {
   return response.salesReply.text;
 }
 
+function applyAssistantResponse(
+  customer: CustomerSession,
+  nextResponse: ChatResponse,
+  assistantMessageId: string
+): CustomerSession {
+  return {
+    ...customer,
+    response: nextResponse,
+    summaryRequirement: mergeDisplayRequirement(
+      customer.summaryRequirement,
+      sanitizeDisplayRequirement(nextResponse.requirement)
+    ),
+    messages: [
+      ...customer.messages,
+      {
+        id: assistantMessageId,
+        role: "assistant",
+        text: buildAssistantMessage(nextResponse)
+      }
+    ],
+    updatedAt: Date.now()
+  };
+}
+
+function mergeDisplayRequirement(
+  prior: ChatResponse["requirement"] | null,
+  current: ChatResponse["requirement"]
+): ChatResponse["requirement"] {
+  if (!prior) return current;
+  const currentIsPreferenceOnly = current.preferences.features.length > 0 && !current.budget && current.layout.bedroom === null;
+  return {
+    ...current,
+    location: currentIsPreferenceOnly ? prior.location : current.location ?? prior.location,
+    budget: current.budget ?? prior.budget,
+    layout: {
+      bedroom: current.layout.bedroom ?? prior.layout.bedroom,
+      livingRoom: current.layout.livingRoom ?? prior.layout.livingRoom
+    },
+    preferences: {
+      rentType: current.preferences.rentType ?? prior.preferences.rentType,
+      direction: current.preferences.direction ?? prior.preferences.direction,
+      minArea: current.preferences.minArea ?? prior.preferences.minArea,
+      moveInDate: current.preferences.moveInDate ?? prior.preferences.moveInDate,
+      features: Array.from(new Set([...(prior.preferences.features ?? []), ...(current.preferences.features ?? [])]))
+    },
+    missingRequiredSlots: getDisplayMissingSlots({
+      ...current,
+      location: currentIsPreferenceOnly ? prior.location : current.location ?? prior.location,
+      budget: current.budget ?? prior.budget,
+      layout: {
+        bedroom: current.layout.bedroom ?? prior.layout.bedroom,
+        livingRoom: current.layout.livingRoom ?? prior.layout.livingRoom
+      }
+    })
+  };
+}
+
+function sanitizeDisplayRequirement(requirement: ChatResponse["requirement"]): ChatResponse["requirement"] {
+  const locationText = requirement.location?.normalized ?? requirement.location?.raw ?? "";
+  const locationLooksLikePreference =
+    isPetPreferenceText(locationText) ||
+    ["近地铁", "带阳台", "大单间", "可养宠物"].some((feature) => locationText.includes(feature));
+  if (!locationLooksLikePreference) return requirement;
+  return {
+    ...requirement,
+    location: null,
+    missingRequiredSlots: getDisplayMissingSlots({ ...requirement, location: null })
+  };
+}
+
+function isPetPreferenceText(text: string): boolean {
+  return /可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物/.test(text);
+}
+
+function getDisplayMissingSlots(requirement: Pick<ChatResponse["requirement"], "location" | "budget" | "layout">): string[] {
+  const missingSlots: string[] = [];
+  if (!requirement.location) missingSlots.push("location");
+  if (!requirement.budget) missingSlots.push("budget");
+  if (requirement.layout.bedroom === null) missingSlots.push("layout");
+  return missingSlots;
+}
+
 function formatRequirementLayout(layout: ChatResponse["requirement"]["layout"]): string {
   const bedroom = layout.bedroom === null ? "?" : layout.bedroom;
   if (layout.livingRoom === null) {
@@ -1155,8 +1389,8 @@ function formatRequirementLayout(layout: ChatResponse["requirement"]["layout"]):
   return `${bedroom}室${layout.livingRoom}厅`;
 }
 
-function buildPreferenceChips(response: ChatResponse): string[] {
-  const { preferences } = response.requirement;
+function buildPreferenceChips(requirement: ChatResponse["requirement"]): string[] {
+  const { preferences } = requirement;
   return [
     preferences.rentType,
     preferences.direction,
@@ -1172,10 +1406,8 @@ function buildCustomerSummary(customer: CustomerSession): string {
     return latestUserMessage?.text ?? "等待输入客户需求";
   }
 
-  const { requirement } = customer.response;
-  const location = requirement.missingRequiredSlots.includes("location")
-    ? "位置待确认"
-    : requirement.location?.normalized ?? "位置待确认";
+  const requirement = customer.summaryRequirement ?? customer.response.requirement;
+  const location = requirement.location?.normalized ?? "位置待确认";
   const budget = requirement.budget ? `${requirement.budget.target}左右` : "预算待确认";
   const layout = requirement.layout.bedroom === null ? "户型待确认" : formatRequirementLayout(requirement.layout);
   return `${location} · ${budget} · ${layout}`;

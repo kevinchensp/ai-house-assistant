@@ -126,12 +126,23 @@ export function createAssistant(dependencies: AssistantDependencies) {
         payload: { text: request.message }
       });
 
+      const priorRequirement = sessionState.get(request.sessionId) ?? null;
       const consultationIntent = await resolveAssistantIntent(dependencies, request.message);
       if (consultationIntent) {
-        return handleConsultation(dependencies, request.sessionId, request.message, consultationIntent);
+        const consultationResponse = await handleConsultation(
+          dependencies,
+          request.sessionId,
+          request.message,
+          consultationIntent
+        );
+        return priorRequirement
+          ? {
+              ...consultationResponse,
+              requirement: mergeRequirementSummary(priorRequirement, consultationResponse.requirement)
+            }
+          : consultationResponse;
       }
 
-      const priorRequirement = sessionState.get(request.sessionId) ?? null;
       const requirement = await resolveTurnRequirement(
         dependencies,
         request.message,
@@ -680,6 +691,34 @@ function buildConsultationResponse(args: {
   };
 }
 
+function mergeRequirementSummary(
+  priorRequirement: RequirementExtraction,
+  currentRequirement: RequirementExtraction
+): RequirementExtraction {
+  const priorFeatures = priorRequirement.preferences.features ?? [];
+  const currentFeatures = currentRequirement.preferences.features ?? [];
+  return normalizeFollowUpQuestion(validateRequirementExtraction({
+    ...currentRequirement,
+    location: isLocationSpecificEnough(currentRequirement.location)
+      ? currentRequirement.location
+      : priorRequirement.location,
+    budget: currentRequirement.budget ?? priorRequirement.budget,
+    layout: {
+      bedroom: currentRequirement.layout.bedroom ?? priorRequirement.layout.bedroom,
+      livingRoom: currentRequirement.layout.livingRoom ?? priorRequirement.layout.livingRoom,
+      toilet: currentRequirement.layout.toilet ?? priorRequirement.layout.toilet,
+      confidence: Math.max(currentRequirement.layout.confidence ?? 0, priorRequirement.layout.confidence ?? 0)
+    },
+    preferences: {
+      rentType: currentRequirement.preferences.rentType ?? priorRequirement.preferences.rentType,
+      direction: currentRequirement.preferences.direction ?? priorRequirement.preferences.direction,
+      minArea: currentRequirement.preferences.minArea ?? priorRequirement.preferences.minArea,
+      moveInDate: currentRequirement.preferences.moveInDate ?? priorRequirement.preferences.moveInDate,
+      features: Array.from(new Set([...priorFeatures, ...currentFeatures]))
+    }
+  }));
+}
+
 async function resolveConsultationCenter(
   dependencies: AssistantDependencies,
   locationKeyword: string
@@ -715,7 +754,13 @@ async function resolveTurnRequirement(
   if (priorRequirement && isNearbyAcceptance(message)) {
     return widenRequirementForNearby(priorRequirement, { widenBudget: isBudgetWidening(message) });
   }
-  const requirement = await extractRequirementWithFallback(dependencies, message);
+  const requirement = mergeMessagePreferenceFeatures(await extractRequirementWithFallback(dependencies, message), message);
+  if (priorRequirement && isIncrementalPreferenceUpdate(message, requirement)) {
+    return mergeRequirementSummary(priorRequirement, {
+      ...requirement,
+      location: null
+    });
+  }
   if (
     !isLocationSpecificEnough(requirement.location) &&
     isClientResolvedLocationUsable(message, requirement.location, clientResolvedLocation)
@@ -726,6 +771,44 @@ async function resolveTurnRequirement(
     });
   }
   return normalizeFollowUpQuestion(await resolveRequirementLocation(dependencies, message, requirement));
+}
+
+function mergeMessagePreferenceFeatures(requirement: RequirementExtraction, message: string): RequirementExtraction {
+  const features = extractMessagePreferenceFeatures(message);
+  if (features.length === 0) return requirement;
+  return validateRequirementExtraction({
+    ...requirement,
+    preferences: {
+      ...requirement.preferences,
+      features: Array.from(new Set([...(requirement.preferences.features ?? []), ...features]))
+    }
+  });
+}
+
+function extractMessagePreferenceFeatures(message: string): string[] {
+  const features: string[] = [];
+  if (/近地铁|靠近地铁|地铁站|地铁口|离地铁近/.test(message)) features.push("近地铁");
+  if (/阳台|带阳台|有阳台/.test(message)) features.push("带阳台");
+  if (/大单间|大一点|大点|面积大|空间大/.test(message)) features.push("大单间");
+  if (/可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物/.test(message)) {
+    features.push("可养宠物");
+  }
+  return features;
+}
+
+function isIncrementalPreferenceUpdate(message: string, requirement: RequirementExtraction): boolean {
+  const hasPreference =
+    extractMessagePreferenceFeatures(message).length > 0 ||
+    Boolean(requirement.preferences.rentType) ||
+    Boolean(requirement.preferences.direction) ||
+    Boolean(requirement.preferences.minArea) ||
+    Boolean(requirement.preferences.moveInDate) ||
+    requirement.preferences.features.length > 0;
+  const hasCoreSlot =
+    Boolean(requirement.budget) ||
+    requirement.layout.bedroom !== null ||
+    requirement.layout.livingRoom !== null;
+  return hasPreference && !hasCoreSlot;
 }
 
 async function extractRequirementWithFallback(
@@ -1070,7 +1153,7 @@ function buildFollowUpQuestion(missingRequiredSlots: string[]): string {
 }
 
 function isNearbyAcceptance(message: string): boolean {
-  return /周边可以|附近也行|附近可以|可以周边|预算.*上浮|上浮.*预算|可以/.test(message.trim());
+  return /周边可以|附近也行|附近可以|可以周边|周边也行|预算.*上浮|上浮.*预算/.test(message.trim());
 }
 
 function isBudgetWidening(message: string): boolean {
