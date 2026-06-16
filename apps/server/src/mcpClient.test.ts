@@ -107,6 +107,114 @@ describe("McpClient", () => {
     ]);
   });
 
+  it("swaps reversed building coordinates before ranking uses them", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                rows: [
+                  {
+                    house_id: "h-reversed",
+                    building_id: "b-reversed",
+                    building_name: "泰竣36东平九期A栋",
+                    house_number: "1002",
+                    rent_price: 1,
+                    deposit: 0,
+                    bedroom: 1,
+                    living_room: 0,
+                    toilet: 1,
+                    area: 35,
+                    status: 0,
+                    updated_at: "2026-06-13T00:00:00.000Z",
+                    building: {
+                      address: "东平九期A栋",
+                      lng: "22.940397",
+                      lat: "113.400876"
+                    }
+                  }
+                ]
+              })
+            }
+          ]
+        }
+      })
+    });
+
+    const client = new McpClient({
+      url: "http://mcp.test/mcp",
+      authToken: "secret",
+      fetchFn: fetchMock
+    });
+
+    await expect(client.searchHouses({ keyword: "东平" })).resolves.toMatchObject([
+      {
+        houseId: "h-reversed",
+        lng: 113.400876,
+        lat: 22.940397
+      }
+    ]);
+  });
+
+  it("drops invalid building coordinates instead of producing impossible distances", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                rows: [
+                  {
+                    house_id: "h-invalid",
+                    building_id: "b-invalid",
+                    building_name: "异常坐标楼栋",
+                    house_number: "1002",
+                    rent_price: 800,
+                    deposit: 0,
+                    bedroom: 1,
+                    living_room: 0,
+                    toilet: 1,
+                    area: 35,
+                    status: 0,
+                    updated_at: "2026-06-13T00:00:00.000Z",
+                    building: {
+                      address: "异常地址",
+                      lng: "999",
+                      lat: "999"
+                    }
+                  }
+                ]
+              })
+            }
+          ]
+        }
+      })
+    });
+
+    const client = new McpClient({
+      url: "http://mcp.test/mcp",
+      authToken: "secret",
+      fetchFn: fetchMock
+    });
+
+    await expect(client.searchHouses({ keyword: "东平" })).resolves.toMatchObject([
+      {
+        houseId: "h-invalid",
+        lng: null,
+        lat: null
+      }
+    ]);
+  });
+
   it("calls geo search and extracts detail image urls", async () => {
     const fetchMock = vi
       .fn()

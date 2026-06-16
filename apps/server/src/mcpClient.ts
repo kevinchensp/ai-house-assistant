@@ -121,6 +121,7 @@ function normalizeHouse(row: unknown): House | null {
   if (typeof houseId !== "string" || typeof buildingId !== "string") {
     return null;
   }
+  const coordinate = normalizeCoordinate(source.lng ?? building.lng, source.lat ?? building.lat);
 
   return {
     houseId,
@@ -136,11 +137,30 @@ function normalizeHouse(row: unknown): House | null {
     direction: String(source.direction ?? ""),
     status: Number(source.status ?? 0),
     updatedAt: String(source.updated_at ?? source.updatedAt ?? ""),
-    lng: toNullableNumber(source.lng ?? building.lng),
-    lat: toNullableNumber(source.lat ?? building.lat),
+    lng: coordinate.lng,
+    lat: coordinate.lat,
     address: String(source.address ?? building.address ?? ""),
     coverImageUrl: extractImageUrls(source)[0] ?? null
   };
+}
+
+function normalizeCoordinate(rawLng: unknown, rawLat: unknown): { lng: number | null; lat: number | null } {
+  const lng = toNullableNumber(rawLng);
+  const lat = toNullableNumber(rawLat);
+  if (lng === null || lat === null) {
+    return { lng: null, lat: null };
+  }
+  if (isChinaCoordinate(lng, lat)) {
+    return { lng, lat };
+  }
+  if (isChinaCoordinate(lat, lng)) {
+    return { lng: lat, lat: lng };
+  }
+  return { lng: null, lat: null };
+}
+
+function isChinaCoordinate(lng: number, lat: number): boolean {
+  return lng >= 73 && lng <= 136 && lat >= 3 && lat <= 54;
 }
 
 function toNullableNumber(value: unknown): number | null {
