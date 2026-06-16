@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAssistant } from "./assistant";
 import { InMemoryEventLogger } from "./eventLogger";
+import { extractRequirementByRules } from "./requirementRules";
 
 describe("assistant", () => {
   it("returns follow-up when core slots are missing", async () => {
@@ -1077,6 +1078,52 @@ describe("assistant", () => {
     expect(response.salesReply.text).toContain("您可以看下这几套");
     expect(response.salesReply.text).not.toContain("我可以");
     expect(response.salesReply.text).not.toContain("可先按预算、户型继续筛选");
+  });
+
+  it("normalizes area inventory location into the requirement summary", async () => {
+    const searchedKeywords: string[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          searchedKeywords.push(String(args.keyword));
+          return [];
+        }
+      },
+      llmProvider: {
+        extractRequirement: async () => extractRequirementByRules("白云永泰"),
+        extractAssistantIntent: async () => ({
+          type: "area_inventory",
+          locationKeyword: "白云永泰",
+          confidence: 0.92
+        })
+      },
+      locationResolver: {
+        resolve: async (query) =>
+          query === "永泰"
+            ? {
+                raw: "永泰",
+                normalized: "永泰",
+                city: "广州",
+                district: "白云区",
+                placeType: "metro_station",
+                center: { lng: 113.3069, lat: 23.2202 },
+                confidence: 0.9
+              }
+            : null
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-area-inventory-location-summary",
+      message: "白云永泰"
+    });
+
+    expect(response.answerMode).toBe("area_inventory");
+    expect(searchedKeywords).toEqual(["永泰"]);
+    expect(response.requirement.location?.normalized).toBe("永泰");
+    expect(response.requirement.location?.center).toEqual({ lng: 113.3069, lat: 23.2202 });
+    expect(response.requirement.missingRequiredSlots).toEqual(["budget", "layout"]);
   });
 
   it("answers metro line inventory by searching line stations", async () => {

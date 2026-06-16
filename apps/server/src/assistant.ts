@@ -241,7 +241,8 @@ function normalizeAssistantIntent(intent: AssistantIntent): ConsultationIntent |
     return intent.projectName.trim() ? { type: "project_vacancy", projectName: intent.projectName.trim() } : null;
   }
   if (intent.type === "area_inventory") {
-    return intent.locationKeyword.trim() ? { type: "area_inventory", locationKeyword: intent.locationKeyword.trim() } : null;
+    const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+    return locationKeyword ? { type: "area_inventory", locationKeyword } : null;
   }
   if (intent.type === "metro_line_inventory") {
     return normalizeMetroLineName(intent.lineName)
@@ -258,17 +259,20 @@ function normalizeAssistantIntent(intent: AssistantIntent): ConsultationIntent |
     };
   }
   if (intent.type === "area_layout_availability") {
-    return intent.locationKeyword.trim()
-      ? { type: "area_layout_availability", locationKeyword: intent.locationKeyword.trim(), layout: intent.layout }
+    const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+    return locationKeyword
+      ? { type: "area_layout_availability", locationKeyword, layout: intent.layout }
       : null;
   }
   if (intent.type === "price_range") {
-    return intent.locationKeyword.trim()
-      ? { type: "price_range", locationKeyword: intent.locationKeyword.trim(), layout: intent.layout }
+    const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+    return locationKeyword
+      ? { type: "price_range", locationKeyword, layout: intent.layout }
       : null;
   }
-  return intent.locationKeyword.trim()
-    ? { type: "distance_ranking", locationKeyword: intent.locationKeyword.trim() }
+  const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+  return locationKeyword
+    ? { type: "distance_ranking", locationKeyword }
     : null;
 }
 
@@ -482,7 +486,8 @@ async function handleAreaInventory(
     salesReply: {
       text: buildAreaInventoryReply(intent.locationKeyword, recommendations),
       nextAction: "copy_reply"
-    }
+    },
+    requirement: buildConsultationRequirement(intent.locationKeyword, center)
   });
 }
 
@@ -689,6 +694,26 @@ function buildConsultationResponse(args: {
     consultation: args.consultation,
     salesReply: args.salesReply
   };
+}
+
+function buildConsultationRequirement(locationKeyword: string, center: Coordinate | null): RequirementExtraction {
+  return normalizeFollowUpQuestion(validateRequirementExtraction({
+    location: {
+      raw: locationKeyword,
+      normalized: locationKeyword,
+      city: "广州",
+      district: null,
+      placeType: center ? "poi" : "unknown",
+      center,
+      confidence: center ? 0.78 : 0.62
+    },
+    budget: null,
+    layout: { bedroom: null, livingRoom: null, toilet: null, confidence: 0.1 },
+    preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+    missingRequiredSlots: [],
+    shouldAskFollowUp: false,
+    followUpQuestion: null
+  }));
 }
 
 function mergeRequirementSummary(
@@ -940,6 +965,14 @@ function extractConsultationLocationKeyword(message: string): string | null {
     .replace(/^(?:广州(?:市)?)?(?:白云区|白云|黄埔区|黄埔)?/, "")
     .replace(/一居室|一房|一室一厅|一室|单间|两房|两室|三房|三室|1室1厅|1室|2室|3室/g, "")
     .replace(/价格范围|租金范围|价位|多少钱|离地铁最近|距离地铁最近|最近地铁|按距离|房源排序|有什么|有哪些|房源|房子|空房|排序|的/g, "")
+    .replace(/[？?。,.，\s]/g, "")
+    .trim();
+  return cleaned.length >= 2 ? cleaned : null;
+}
+
+function normalizeConsultationLocationKeyword(locationKeyword: string): string | null {
+  const cleaned = locationKeyword
+    .replace(/^(?:广州(?:市)?)?(?:白云区|白云|黄埔区|黄埔)/, "")
     .replace(/[？?。,.，\s]/g, "")
     .trim();
   return cleaned.length >= 2 ? cleaned : null;
