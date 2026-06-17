@@ -74,10 +74,20 @@ type ChatResponse = {
     lat?: number | null;
     distanceMeters?: number | null;
   }>;
+  recommendationPagination?: RecommendationPagination;
   salesReply: {
     text: string;
     nextAction: string;
   };
+};
+
+type RecommendationPagination = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:3101" : "");
@@ -210,6 +220,7 @@ function App() {
   const [workspaceFocus, setWorkspaceFocus] = useState<"chat" | "insights">("chat");
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
   const [editingCustomerName, setEditingCustomerName] = useState("");
+  const [loadingRecommendationPage, setLoadingRecommendationPage] = useState(false);
   const activeCustomer = customers.find((customer) => customer.id === activeCustomerId) ?? customers[0];
   const isLoading = loadingCustomerId === activeCustomer?.id;
   const response = activeCustomer?.response ?? null;
@@ -329,6 +340,35 @@ function App() {
   async function copyChatMessage(message: ChatMessage) {
     await navigator.clipboard.writeText(message.text);
     setCopiedMessageId(message.id);
+  }
+
+  async function loadRecommendationPage(page: number) {
+    if (!authToken || !activeCustomer?.response) return;
+    const pageSize = activeCustomer.response.recommendationPagination?.pageSize ?? 10;
+    setLoadingRecommendationPage(true);
+    try {
+      const payload = (await apiFetch(
+        authToken,
+        `/api/customer-sessions/${activeCustomer.id}/recommendations?page=${page}&pageSize=${pageSize}`
+      )) as Pick<ChatResponse, "recommendations" | "recommendationPagination">;
+      setCustomers((current) =>
+        current.map((customer) =>
+          customer.id === activeCustomer.id && customer.response
+            ? {
+                ...customer,
+                response: {
+                  ...customer.response,
+                  recommendations: payload.recommendations,
+                  recommendationPagination: payload.recommendationPagination
+                },
+                updatedAt: Date.now()
+              }
+            : customer
+        )
+      );
+    } finally {
+      setLoadingRecommendationPage(false);
+    }
   }
 
   function updateDraft(value: string) {
@@ -504,7 +544,7 @@ function App() {
                 onClick={() => {
                   setActiveCustomerId(customer.id);
                   setCopiedMessageId(null);
-                  setWorkspaceFocus(customer.response?.recommendations.length || customer.response?.consultation ? "insights" : "chat");
+                  setWorkspaceFocus(customer.response && (getRecommendationTotal(customer.response) > 0 || customer.response.consultation) ? "insights" : "chat");
                   setRecommendationView("list");
                 }}
                 onKeyDown={(event) => {
@@ -666,6 +706,8 @@ function App() {
               response={response}
               view={recommendationView}
               onViewChange={setRecommendationView}
+              onPageChange={loadRecommendationPage}
+              isPageLoading={loadingRecommendationPage}
             />
           </section>
         </aside>
@@ -687,16 +729,21 @@ function BrandTitle({ compact, layout = "inline" }: { compact: boolean; layout?:
 function RecommendationResults({
   response,
   view,
-  onViewChange
+  onViewChange,
+  onPageChange,
+  isPageLoading
 }: {
   response: ChatResponse | null;
   view: "list" | "map";
   onViewChange: (view: "list" | "map") => void;
+  onPageChange: (page: number) => void;
+  isPageLoading: boolean;
 }) {
   const hasRecommendations = Boolean(response?.recommendations.length);
   const hasConsultation = Boolean(response?.consultation);
   const hasLocationMap = Boolean(response?.requirement.location?.center);
   const canShowMap = Boolean(response && (hasRecommendations || hasLocationMap));
+  const recommendationTotal = response ? getRecommendationTotal(response) : 0;
 
   return (
     <>
@@ -704,6 +751,7 @@ function RecommendationResults({
         <div className="section-title">
           <Home size={18} />
           <h2>查询结果</h2>
+          {recommendationTotal > 0 ? <span className="result-count">{recommendationTotal} 套</span> : null}
         </div>
         {canShowMap ? (
           <div className="view-switch" aria-label="推荐结果视图">
@@ -720,9 +768,9 @@ function RecommendationResults({
       {hasConsultation && response?.consultation ? <ConsultationCard consultation={response.consultation} /> : null}
 
       {response && view === "map" && canShowMap ? (
-        <RecommendationMap response={response} />
+        <RecommendationMap response={response} onPageChange={onPageChange} isPageLoading={isPageLoading} />
       ) : hasRecommendations && response ? (
-        <HouseList houses={response.recommendations} />
+        <HouseList response={response} onPageChange={onPageChange} isPageLoading={isPageLoading} />
       ) : hasConsultation ? null : (
         <div className="empty-state">查询结果会在这里出现。</div>
       )}
@@ -751,9 +799,26 @@ function ConsultationCard({ consultation }: { consultation: NonNullable<ChatResp
   );
 }
 
-function HouseList({ houses }: { houses: ChatResponse["recommendations"] }) {
+function HouseList({
+  response,
+  onPageChange,
+  isPageLoading
+}: {
+  response: ChatResponse;
+  onPageChange: (page: number) => void;
+  isPageLoading: boolean;
+}) {
+  const houses = response.recommendations;
+  const pagination = getRecommendationPagination(response);
+  const start = pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1;
+  const end = Math.min(pagination.page * pagination.pageSize, pagination.total);
+
   return (
     <div className="house-list">
+      <div className="house-list-summary">
+        <span>已按匹配度、距离和图片完整度排序</span>
+        <strong>第 {pagination.page}/{pagination.totalPages} 页 · 共 {pagination.total} 套</strong>
+      </div>
       {houses.map((house) => (
         <article className="house-card" key={house.houseId}>
           <div className="house-cover-frame">
@@ -781,15 +846,61 @@ function HouseList({ houses }: { houses: ChatResponse["recommendations"] }) {
             <div className="feedback-row">
               <button><CheckCircle2 size={16} /> 合适</button>
               <button><ThumbsDown size={16} /> 不合适</button>
+              <a className="room-detail-link" href={buildRoomDetailUrl(house.houseId)} target="_blank" rel="noreferrer">
+                查看详情
+              </a>
             </div>
           </div>
         </article>
       ))}
+      <ResultPagination
+        pagination={pagination}
+        start={start}
+        end={end}
+        isLoading={isPageLoading}
+        onPageChange={onPageChange}
+      />
     </div>
   );
 }
 
-function RecommendationMap({ response }: { response: ChatResponse }) {
+function ResultPagination({
+  pagination,
+  start,
+  end,
+  isLoading,
+  onPageChange
+}: {
+  pagination: RecommendationPagination;
+  start: number;
+  end: number;
+  isLoading: boolean;
+  onPageChange: (page: number) => void;
+}) {
+  if (pagination.totalPages <= 1) return null;
+
+  return (
+    <div className="result-pagination">
+      <button disabled={!pagination.hasPrev || isLoading} onClick={() => onPageChange(pagination.page - 1)}>
+        上一页
+      </button>
+      <span>{start}-{end} / {pagination.total}</span>
+      <button disabled={!pagination.hasNext || isLoading} onClick={() => onPageChange(pagination.page + 1)}>
+        下一页
+      </button>
+    </div>
+  );
+}
+
+function RecommendationMap({
+  response,
+  onPageChange,
+  isPageLoading
+}: {
+  response: ChatResponse;
+  onPageChange: (page: number) => void;
+  isPageLoading: boolean;
+}) {
   const mapRef = React.useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = React.useRef<AMapMap | null>(null);
   const houseMarkerRefs = React.useRef<Map<string, AMapMarker>>(new Map());
@@ -802,6 +913,9 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
   const hiddenHouseCount = center ? coordinateHouses.length - nearHouses.length : 0;
   const [selectedHouseId, setSelectedHouseId] = useState<string | null>(houses[0]?.houseId ?? null);
   const selectedHouse = houses.find((house) => house.houseId === selectedHouseId) ?? houses[0] ?? null;
+  const pagination = getRecommendationPagination(response);
+  const pageStart = pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1;
+  const pageEnd = Math.min(pagination.page * pagination.pageSize, pagination.total);
 
   useEffect(() => {
     if (!houses.length) {
@@ -854,7 +968,7 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
           map,
           position: [house.lng, house.lat],
           title: `${house.buildingName} ${house.houseNumber}`,
-          content: buildMapHouseMarkerContent(house, index, house.houseId === selectedHouse?.houseId),
+          content: buildMapHouseMarkerContent(house, pageStart + index - 1, house.houseId === selectedHouse?.houseId),
           zIndex: 10
         });
         marker.on?.("click", () => selectHouseOnMap(house));
@@ -885,9 +999,9 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
     houses.forEach((house, index) => {
       houseMarkerRefs.current
         .get(house.houseId)
-        ?.setContent(buildMapHouseMarkerContent(house, index, house.houseId === selectedHouse?.houseId));
+        ?.setContent(buildMapHouseMarkerContent(house, pageStart + index - 1, house.houseId === selectedHouse?.houseId));
     });
-  }, [houses, selectedHouse?.houseId]);
+  }, [houses, pageStart, selectedHouse?.houseId]);
 
   if (!amapWebMapKey) {
     return <div className="empty-state">配置 VITE_AMAP_WEB_MAP_KEY 后显示房源地图。</div>;
@@ -916,6 +1030,10 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
         ) : null}
       </div>
       <div className="map-house-index">
+        <div className="house-list-summary">
+          <span>地图已展示可定位房源点位</span>
+          <strong>本页 {houses.length} / 共 {pagination.total} 套</strong>
+        </div>
         {hiddenHouseCount > 0 ? (
           <p className="map-filter-note">已隐藏 {hiddenHouseCount} 套坐标距离异常的房源，地图以需求位置为中心。</p>
         ) : null}
@@ -927,16 +1045,38 @@ function RecommendationMap({ response }: { response: ChatResponse }) {
             key={house.houseId}
             onClick={() => selectHouseOnMap(house)}
           >
-            <span>{index + 1}</span>
+            <span>{pageStart + index}</span>
             <div>
               <strong>{house.buildingName} {house.houseNumber}</strong>
               <small>{house.rentPrice}元 · {formatDistance(house.distanceMeters)} · {house.bedroom}室{house.livingRoom}厅</small>
             </div>
           </article>
         ))}
+        <ResultPagination
+          pagination={pagination}
+          start={pageStart}
+          end={pageEnd}
+          isLoading={isPageLoading}
+          onPageChange={onPageChange}
+        />
       </div>
     </div>
   );
+}
+
+function getRecommendationTotal(response: ChatResponse): number {
+  return response.recommendationPagination?.total ?? response.recommendations.length;
+}
+
+function getRecommendationPagination(response: ChatResponse): RecommendationPagination {
+  return response.recommendationPagination ?? {
+    page: 1,
+    pageSize: Math.max(response.recommendations.length, 1),
+    total: response.recommendations.length,
+    totalPages: 1,
+    hasNext: false,
+    hasPrev: false
+  };
 }
 
 function MapSelectedHouseCard({ house }: { house: RecommendedHouse }) {
@@ -960,9 +1100,16 @@ function MapSelectedHouseCard({ house }: { house: RecommendedHouse }) {
         {house.address ? <p className="house-address">{house.address}</p> : null}
         <p>{house.recommendationReason}</p>
         {house.mismatchNote ? <p className="warning">{house.mismatchNote}</p> : null}
+        <a className="room-detail-link compact" href={buildRoomDetailUrl(house.houseId)} target="_blank" rel="noreferrer">
+          查看详情
+        </a>
       </div>
     </article>
   );
+}
+
+function buildRoomDetailUrl(houseId: string): string {
+  return `https://saas.manzu365.com/#/building/roomInfo?house_id=${encodeURIComponent(houseId)}`;
 }
 
 function hasHouseCoordinate(house: RecommendedHouse): house is CoordinateHouse {
@@ -1421,8 +1568,9 @@ function buildCustomerStatus(customer: CustomerSession): string {
   if (response.followUpQuestion) {
     return `待补充：${response.requirement.missingRequiredSlots.map(formatMissingSlot).join("、")}`;
   }
-  if (response.recommendations.length > 0) {
-    return `已推荐 ${response.recommendations.length} 套，待客户反馈`;
+  const recommendationTotal = getRecommendationTotal(response);
+  if (recommendationTotal > 0) {
+    return `已推荐 ${recommendationTotal} 套，待客户反馈`;
   }
   return "暂无合适房源，待确认放宽条件";
 }

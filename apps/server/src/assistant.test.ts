@@ -300,6 +300,68 @@ describe("assistant", () => {
     });
   });
 
+  it("prioritizes image-backed houses in recommendation cards", async () => {
+    const imageCalls: string[] = [];
+    const houses = Array.from({ length: 35 }, (_, index) => ({
+      houseId: `img-${index + 1}`,
+      buildingId: `b-img-${index + 1}`,
+      buildingName: `东平图片公寓${index + 1}`,
+      houseNumber: `${200 + index}`,
+      rentPrice: index === 34 ? 950 : 1000,
+      deposit: 1000,
+      bedroom: 1,
+      livingRoom: 1,
+      toilet: 1,
+      area: index === 34 ? 25 : 40,
+      direction: "",
+      status: 0,
+      updatedAt: "2026-06-17T00:00:00.000Z",
+      lng: 113.293204 + index * 0.0001,
+      lat: 23.225461
+    }));
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => houses,
+        getHouseImageUrlsSafe: async (houseId: string) => {
+          imageCalls.push(houseId);
+          return houseId === "img-35" ? ["https://img.example.com/img-35.jpg"] : [];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "白云东平",
+            normalized: "东平",
+            city: "广州",
+            district: "白云区",
+            placeType: "metro_station",
+            center: { lng: 113.293204, lat: 23.225461 },
+            confidence: 0.9
+          },
+          budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+          layout: { bedroom: 1, livingRoom: 1, toilet: null, confidence: 0.9 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: [],
+          shouldAskFollowUp: false,
+          followUpQuestion: null
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-image-priority",
+      message: "帮我找白云东平一室一厅，预算1000左右"
+    });
+
+    expect(imageCalls).toContain("img-35");
+    expect(response.recommendations).toHaveLength(35);
+    expect(response.recommendations[0]).toMatchObject({
+      houseId: "img-35",
+      coverImageUrl: "https://img.example.com/img-35.jpg"
+    });
+  });
+
   it("resolves model-missing location with a location resolver before searching", async () => {
     const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const assistant = createAssistant({
@@ -1036,6 +1098,7 @@ describe("assistant", () => {
   });
 
   it("answers area inventory consultation without requiring budget or layout", async () => {
+    const imageCalls: string[] = [];
     const assistant = createAssistant({
       mcpClient: {
         searchHouses: async (args) => {
@@ -1046,6 +1109,10 @@ describe("assistant", () => {
             buildTestHouse("yt-one", 1050, "永泰一房公寓", 113.307, 23.222),
             buildTestHouse("yt-two", 1500, "永泰两房公寓", 113.308, 23.223)
           ];
+        },
+        getHouseImageUrlsSafe: async (houseId: string) => {
+          imageCalls.push(houseId);
+          return houseId === "yt-one" ? ["https://img.example.com/yt-one.jpg"] : [];
         }
       },
       locationResolver: {
@@ -1074,6 +1141,8 @@ describe("assistant", () => {
     expect(response.followUpQuestion).toBeNull();
     expect(response.consultation?.summary).toContain("永泰目前查到 3 套空房");
     expect(response.recommendations).toHaveLength(3);
+    expect(imageCalls).toEqual(["yt-room", "yt-one", "yt-two"]);
+    expect(response.recommendations.find((house) => house.houseId === "yt-one")?.coverImageUrl).toBe("https://img.example.com/yt-one.jpg");
     expect(response.salesReply.text).toContain("永泰目前有 3 套空房");
     expect(response.salesReply.text).toContain("您可以看下这几套");
     expect(response.salesReply.text).not.toContain("我可以");

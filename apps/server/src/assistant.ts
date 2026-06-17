@@ -27,6 +27,7 @@ export type AssistantDependencies = {
   eventLogger: InMemoryEventLogger;
   llmProvider?: RequirementExtractionProvider;
   locationResolver?: LocationResolver;
+  enrichImages?: boolean;
 };
 
 export type ChatRequest = {
@@ -56,11 +57,21 @@ export type ChatResponse = {
   followUpQuestion: string | null;
   searchTrace: SearchTraceStep[];
   recommendations: RankedHouse[];
+  recommendationPagination?: RecommendationPagination;
   consultation: ConsultationResult | null;
   salesReply: {
     text: string;
     nextAction: string;
   };
+};
+
+export type RecommendationPagination = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
 };
 
 export type ConsultationResult = {
@@ -70,6 +81,9 @@ export type ConsultationResult = {
 };
 
 const maxRecommendationDistanceMeters = 20000;
+const imageEnrichmentConcurrency = 6;
+const mcpPageSize = 50;
+const consultationMaxResults = 100;
 const metroLineStations: Record<string, string[]> = {
   "3号线": [
     "机场北",
@@ -185,11 +199,12 @@ export function createAssistant(dependencies: AssistantDependencies) {
 
       const { houses, searchTrace } = await searchWithFallbacks(dependencies, request.sessionId, requirement);
       const locationFilteredHouses = filterHousesForLocation(houses, requirement.location?.center ?? null);
-      const recommendations = await enrichRecommendationsWithImages(dependencies, rankHouses(locationFilteredHouses, {
+      const rankedRecommendations = rankHouses(locationFilteredHouses, {
         budget: requirement.budget,
         layout: requirement.layout,
         center: requirement.location?.center ?? null
-      }).slice(0, 5));
+      });
+      const recommendations = await enrichRecommendationImages(dependencies, rankedRecommendations);
 
       dependencies.eventLogger.record("recommendation_shown", {
         sessionId: request.sessionId,
@@ -355,18 +370,19 @@ async function handleMetroStationInventory(
   intent: Extract<ConsultationIntent, { type: "metro_station_inventory" }>
 ): Promise<ChatResponse> {
   const center = await resolveConsultationCenter(dependencies, intent.stationName);
-  const args = { keyword: intent.stationName, status: 0, pageSize: 30 };
+  const args = { keyword: intent.stationName, status: 0, pageSize: mcpPageSize, maxResults: consultationMaxResults };
   const houses = await callSearch(dependencies, sessionId, "metro_station_inventory", args);
   const stationCenters = new Map<string, Coordinate>();
   if (center) {
     stationCenters.set(intent.stationName, center);
   }
   const houseStationMap = new Map(houses.map((house) => [house.houseId, intent.stationName]));
-  const recommendations = annotateMetroLineRecommendations(rankHouses(houses, {
+  const rankedRecommendations = annotateMetroLineRecommendations(rankHouses(houses, {
     budget: null,
     layout: { bedroom: null, livingRoom: null, toilet: null },
     center
-  }), houseStationMap, stationCenters).slice(0, 10);
+  }), houseStationMap, stationCenters);
+  const recommendations = await enrichRecommendationImages(dependencies, rankedRecommendations);
   const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
   const stationLabel = `${intent.stationName}站`;
   const consultation = {
@@ -407,7 +423,7 @@ async function handleMetroLineInventory(
   const stationCenters = await resolveStationCenters(dependencies, stationKeywords);
 
   for (const station of stationKeywords) {
-    const args = { keyword: station, status: 0, pageSize: 10 };
+    const args = { keyword: station, status: 0, pageSize: mcpPageSize, maxResults: mcpPageSize };
     const houses = await callSearch(dependencies, sessionId, "metro_line_station_inventory", args);
     searchTrace.push({ name: "metro_line_station_inventory", arguments: args, resultCount: houses.length });
     for (const house of houses) {
@@ -418,11 +434,12 @@ async function handleMetroLineInventory(
     }
   }
 
-  const recommendations = annotateMetroLineRecommendations(rankHouses(Array.from(houseMap.values()), {
+  const rankedRecommendations = annotateMetroLineRecommendations(rankHouses(Array.from(houseMap.values()), {
     budget: null,
     layout: { bedroom: null, livingRoom: null, toilet: null },
     center: null
-  }), houseStationMap, stationCenters).slice(0, 10);
+  }), houseStationMap, stationCenters);
+  const recommendations = await enrichRecommendationImages(dependencies, rankedRecommendations);
   const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
   const consultation = {
     title: `${intent.lineName}沿线空房概览`,
@@ -455,15 +472,14 @@ async function handleAreaInventory(
   intent: Extract<ConsultationIntent, { type: "area_inventory" }>
 ): Promise<ChatResponse> {
   const center = await resolveConsultationCenter(dependencies, intent.locationKeyword);
-  const args = { keyword: intent.locationKeyword, status: 0, pageSize: 30 };
+  const args = { keyword: intent.locationKeyword, status: 0, pageSize: mcpPageSize, maxResults: consultationMaxResults };
   const houses = await callSearch(dependencies, sessionId, "area_inventory", args);
-  const recommendations = rankHouses(houses, {
+  const rankedRecommendations = rankHouses(houses, {
     budget: null,
     layout: { bedroom: null, livingRoom: null, toilet: null },
     center
-  })
-    .sort((a, b) => compareDistanceThenScore(a, b))
-    .slice(0, 10);
+  }).sort((a, b) => compareDistanceThenScore(a, b));
+  const recommendations = await enrichRecommendationImages(dependencies, rankedRecommendations);
   const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
   const consultation = {
     title: `${intent.locationKeyword}空房概览`,
@@ -502,16 +518,16 @@ async function handleAreaLayoutAvailability(
     bedroom: intent.layout.bedroom,
     livingRoom: intent.layout.livingRoom,
     status: 0,
-    pageSize: 30
+    pageSize: mcpPageSize,
+    maxResults: consultationMaxResults
   };
   const houses = await callSearch(dependencies, sessionId, "area_layout_availability", args);
-  const recommendations = rankHouses(houses, {
+  const rankedRecommendations = rankHouses(houses, {
     budget: null,
     layout: { ...intent.layout, toilet: null },
     center
-  })
-    .sort((a, b) => compareDistanceThenScore(a, b))
-    .slice(0, 10);
+  }).sort((a, b) => compareDistanceThenScore(a, b));
+  const recommendations = await enrichRecommendationImages(dependencies, rankedRecommendations);
   const layoutLabel = formatConsultationLayout(intent.layout);
   const rentPrices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
   const minRent = rentPrices.length ? Math.min(...rentPrices) : null;
@@ -546,13 +562,14 @@ async function handleProjectVacancy(
   sessionId: string,
   intent: Extract<ConsultationIntent, { type: "project_vacancy" }>
 ): Promise<ChatResponse> {
-  const args = { keyword: intent.projectName, status: 0, pageSize: 30 };
+  const args = { keyword: intent.projectName, status: 0, pageSize: mcpPageSize, maxResults: consultationMaxResults };
   const houses = await callSearch(dependencies, sessionId, "project_vacancy", args);
-  const recommendations = rankHouses(houses, {
+  const rankedRecommendations = rankHouses(houses, {
     budget: null,
     layout: { bedroom: null, livingRoom: null, toilet: null },
     center: null
-  }).slice(0, 10);
+  });
+  const recommendations = await enrichRecommendationImages(dependencies, rankedRecommendations);
   const consultation = {
     title: `${intent.projectName}空房`,
     summary: recommendations.length
@@ -588,7 +605,8 @@ async function handlePriceRange(
     bedroom: intent.layout.bedroom,
     livingRoom: intent.layout.livingRoom,
     status: 0,
-    pageSize: 50
+    pageSize: mcpPageSize,
+    maxResults: consultationMaxResults
   };
   const houses = await callSearch(dependencies, sessionId, "price_range", args);
   const prices = houses.map((house) => house.rentPrice).filter((price) => price > 0).sort((a, b) => a - b);
@@ -633,8 +651,8 @@ async function handleDistanceRanking(
   const resolvedLocation = resolveLocation(intent.locationKeyword);
   const center = resolvedLocation.center;
   const args = center
-    ? { lng: center.lng, lat: center.lat, radiusMeters: 5000, status: 0, pageSize: 30 }
-    : { keyword: intent.locationKeyword, status: 0, pageSize: 30 };
+    ? { lng: center.lng, lat: center.lat, radiusMeters: 5000, status: 0, pageSize: mcpPageSize, maxResults: consultationMaxResults }
+    : { keyword: intent.locationKeyword, status: 0, pageSize: mcpPageSize, maxResults: consultationMaxResults };
   const houses = center && dependencies.mcpClient.searchHousesGeo
     ? await callGeoSearch(dependencies, sessionId, "distance_ranking_geo", args)
     : await callSearch(dependencies, sessionId, "distance_ranking", args);
@@ -644,8 +662,8 @@ async function handleDistanceRanking(
     center
   })
     .filter((house) => house.distanceMeters !== null)
-    .sort((a, b) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER))
-    .slice(0, 10);
+    .sort((a, b) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER));
+  const recommendations = await enrichRecommendationImages(dependencies, ranked, { prioritizeImages: false });
   const locationName = resolvedLocation.normalized || intent.locationKeyword;
   const consultation = {
     title: `${locationName}距离排序`,
@@ -654,8 +672,8 @@ async function handleDistanceRanking(
       : `暂未查到带坐标的${locationName}附近房源。`,
     metrics: [
       { label: "排序方式", value: "由近到远" },
-      { label: "最近距离", value: ranked[0]?.distanceMeters !== null && ranked[0]?.distanceMeters !== undefined ? formatDistance(ranked[0].distanceMeters) : "暂无" },
-      { label: "房源数", value: `${ranked.length}套` }
+      { label: "最近距离", value: recommendations[0]?.distanceMeters !== null && recommendations[0]?.distanceMeters !== undefined ? formatDistance(recommendations[0].distanceMeters) : "暂无" },
+      { label: "房源数", value: `${recommendations.length}套` }
     ]
   };
 
@@ -663,11 +681,11 @@ async function handleDistanceRanking(
     sessionId,
     answerMode: "distance_ranking",
     consultation,
-    recommendations: ranked,
+    recommendations,
     searchTrace: [{ name: center && dependencies.mcpClient.searchHousesGeo ? "distance_ranking_geo" : "distance_ranking", arguments: args, resultCount: houses.length }],
     salesReply: {
-      text: ranked.length
-        ? `我按距离${locationName}由近到远排好了，最近的是 ${ranked[0].buildingName} ${ranked[0].houseNumber}，约${formatDistance(ranked[0].distanceMeters ?? 0)}，租金${ranked[0].rentPrice}元。`
+      text: recommendations.length
+        ? `我按距离${locationName}由近到远排好了，最近的是 ${recommendations[0].buildingName} ${recommendations[0].houseNumber}，约${formatDistance(recommendations[0].distanceMeters ?? 0)}，租金${recommendations[0].rentPrice}元。`
         : `${locationName}附近暂时没查到带坐标的空房，建议改用周边商圈或具体楼栋再查。`,
       nextAction: "copy_reply"
     },
@@ -1229,7 +1247,8 @@ async function searchWithFallbacks(
     minRent: budget.min,
     maxRent: budget.max,
     status: 0,
-    pageSize: 20
+    pageSize: mcpPageSize,
+    maxResults: consultationMaxResults
   };
   const strict = await callSearch(dependencies, sessionId, "strict_keyword", strictArgs);
   trace.push({ name: "strict_keyword", arguments: omitEmptyArgs(strictArgs), resultCount: strict.length });
@@ -1247,7 +1266,8 @@ async function searchWithFallbacks(
       minRent: budget.min,
       maxRent: budget.max,
       status: 0,
-      pageSize: 20
+      pageSize: mcpPageSize,
+      maxResults: consultationMaxResults
     };
     const geo = await callGeoSearch(dependencies, sessionId, "geo_radius_fallback", geoArgs);
     trace.push({ name: "geo_radius_fallback", arguments: omitEmptyArgs(geoArgs), resultCount: geo.length });
@@ -1263,7 +1283,8 @@ async function searchWithFallbacks(
     minRent: budget.min,
     maxRent: budget.max,
     status: 0,
-    pageSize: 20
+    pageSize: mcpPageSize,
+    maxResults: consultationMaxResults
   };
   const fallback = await callSearch(dependencies, sessionId, "district_fallback", fallbackArgs);
   trace.push({ name: "district_fallback", arguments: omitEmptyArgs(fallbackArgs), resultCount: fallback.length });
@@ -1292,7 +1313,8 @@ async function searchWithFallbacks(
     minRent: budget.min,
     maxRent: expandedBudget.max,
     status: 0,
-    pageSize: 20
+    pageSize: mcpPageSize,
+    maxResults: consultationMaxResults
   };
   const inventoryBudgetFallback = await callSearch(
     dependencies,
@@ -1381,17 +1403,59 @@ async function enrichRecommendationsWithImages(
     return recommendations;
   }
 
-  return Promise.all(
-    recommendations.map(async (house) => {
-      if (house.coverImageUrl) return house;
-      try {
-        const [coverImageUrl] = await dependencies.mcpClient.getHouseImageUrlsSafe?.(house.houseId) ?? [];
-        return { ...house, coverImageUrl: coverImageUrl ?? null };
-      } catch {
-        return { ...house, coverImageUrl: null };
-      }
+  return mapWithConcurrency(recommendations, imageEnrichmentConcurrency, async (house) => {
+    if (house.coverImageUrl) return house;
+    try {
+      const [coverImageUrl] = await dependencies.mcpClient.getHouseImageUrlsSafe?.(house.houseId) ?? [];
+      return { ...house, coverImageUrl: coverImageUrl ?? null };
+    } catch {
+      return { ...house, coverImageUrl: null };
+    }
+  });
+}
+
+async function enrichRecommendationImages(
+  dependencies: AssistantDependencies,
+  recommendations: RankedHouse[],
+  options: { prioritizeImages?: boolean } = {}
+): Promise<RankedHouse[]> {
+  if (dependencies.enrichImages === false) {
+    return recommendations;
+  }
+  const enrichedRecommendations = await enrichRecommendationsWithImages(dependencies, recommendations);
+  return options.prioritizeImages === false
+    ? enrichedRecommendations
+    : prioritizeImageBackedRecommendations(enrichedRecommendations);
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }));
+  return results;
+}
+
+function prioritizeImageBackedRecommendations(recommendations: RankedHouse[]): RankedHouse[] {
+  return recommendations
+    .map((house, index) => ({ house, index }))
+    .sort((a, b) => {
+      const aHasImage = Boolean(a.house.coverImageUrl);
+      const bHasImage = Boolean(b.house.coverImageUrl);
+      if (aHasImage !== bHasImage) return aHasImage ? -1 : 1;
+      return a.index - b.index;
     })
-  );
+    .map(({ house }) => house);
 }
 
 function buildSalesReply(

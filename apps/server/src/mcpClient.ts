@@ -24,6 +24,16 @@ type JsonRpcFailure = {
 };
 
 type JsonRpcResponse = JsonRpcSuccess | JsonRpcFailure;
+type McpRowsPayload = {
+  rows?: unknown[];
+  pagination?: {
+    page?: number;
+    pageSize?: number;
+    total?: number;
+    totalPages?: number;
+    hasNext?: boolean;
+  };
+};
 
 export class McpClient {
   private nextId = 1;
@@ -38,7 +48,8 @@ export class McpClient {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.options.authToken}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream"
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -55,7 +66,7 @@ export class McpClient {
       throw new Error(`MCP request failed with HTTP ${response.status}`);
     }
 
-    const payload = (await response.json()) as JsonRpcResponse;
+    const payload = await parseJsonRpcResponse(response);
     if ("error" in payload) {
       throw new Error(payload.error.message);
     }
@@ -63,13 +74,13 @@ export class McpClient {
   }
 
   async searchHouses(args: Record<string, unknown>): Promise<House[]> {
-    const result = await this.callTool("search_houses", args);
-    return parseMcpRows(result).map(normalizeHouse).filter((house): house is House => house !== null);
+    const rows = await this.searchPaginatedRows("search_houses", args);
+    return rows.map(normalizeHouse).filter((house): house is House => house !== null);
   }
 
   async searchHousesGeo(args: Record<string, unknown>): Promise<House[]> {
-    const result = await this.callTool("search_houses_geo", args);
-    return parseMcpRows(result).map(normalizeHouse).filter((house): house is House => house !== null);
+    const rows = await this.searchPaginatedRows("search_houses_geo", args);
+    return rows.map(normalizeHouse).filter((house): house is House => house !== null);
   }
 
   async getHouseDetailSafe(houseId: string): Promise<unknown> {
@@ -92,16 +103,60 @@ export class McpClient {
     const detail = await this.getHouseDetailSafe(houseId);
     return extractImageUrls(detail);
   }
+
+  private async searchPaginatedRows(name: string, args: Record<string, unknown>): Promise<unknown[]> {
+    const { maxResults, ...toolArgs } = args;
+    const requestedMax = toPositiveInteger(maxResults);
+    if (requestedMax === null) {
+      return parseMcpRows(await this.callTool(name, toolArgs));
+    }
+
+    const pageSize = Math.min(toPositiveInteger(toolArgs.pageSize) ?? requestedMax, 50);
+    const startPage = toPositiveInteger(toolArgs.page) ?? 1;
+    const rows: unknown[] = [];
+    let page = startPage;
+
+    while (rows.length < requestedMax) {
+      const payload = parseMcpRowsPayload(await this.callTool(name, { ...toolArgs, page, pageSize }));
+      rows.push(...payload.rows);
+      if (!payload.pagination?.hasNext || payload.rows.length === 0) break;
+      page += 1;
+    }
+
+    return rows.slice(0, requestedMax);
+  }
+}
+
+async function parseJsonRpcResponse(response: Response): Promise<JsonRpcResponse> {
+  const contentType = response.headers?.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream")) {
+    return (await response.json()) as JsonRpcResponse;
+  }
+
+  const eventStream = await response.text();
+  const data = eventStream
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trim())
+    .join("\n");
+  if (!data) {
+    throw new Error("MCP event-stream response did not contain data");
+  }
+  return JSON.parse(data) as JsonRpcResponse;
 }
 
 function parseMcpRows(result: unknown): unknown[] {
+  return parseMcpRowsPayload(result).rows;
+}
+
+function parseMcpRowsPayload(result: unknown): { rows: unknown[]; pagination: McpRowsPayload["pagination"] | null } {
   const content = (result as { content?: Array<{ type: string; text: string }> }).content;
   const text = content?.find((item) => item.type === "text")?.text;
   if (!text) {
-    return [];
+    return { rows: [], pagination: null };
   }
-  const parsed = JSON.parse(text) as { rows?: unknown[] };
-  return parsed.rows ?? [];
+  const parsed = JSON.parse(text) as McpRowsPayload;
+  return { rows: parsed.rows ?? [], pagination: parsed.pagination ?? null };
 }
 
 function parseMcpObject(result: unknown): unknown {
@@ -169,18 +224,39 @@ function toNullableNumber(value: unknown): number | null {
   return Number.isFinite(numberValue) && numberValue !== 0 ? numberValue : null;
 }
 
+function toPositiveInteger(value: unknown): number | null {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return null;
+  const integer = Math.floor(numberValue);
+  return integer > 0 ? integer : null;
+}
+
 function extractImageUrls(value: unknown): string[] {
   const source = value as Record<string, unknown>;
   const images = source.images ?? source.image_urls ?? source.imageUrls;
   if (!Array.isArray(images)) return [];
   return images
     .map((image) => {
-      if (typeof image === "string") return image;
+      if (typeof image === "string") return normalizeImageUrl(image);
       if (!isRecord(image)) return null;
-      const url = image.url ?? image.image_url ?? image.imageUrl ?? image.src;
-      return typeof url === "string" && url.trim() ? url : null;
+      const url = image.url ?? image.image_url ?? image.imageUrl ?? image.src ?? image.path;
+      const prefix = typeof image.prefix === "string" ? image.prefix : "";
+      return typeof url === "string" && url.trim() ? normalizeImageUrl(url, prefix) : null;
     })
     .filter((url): url is string => Boolean(url));
+}
+
+function normalizeImageUrl(url: string, prefix = ""): string | null {
+  const trimmedUrl = url.trim();
+  if (!trimmedUrl) return null;
+  if (/^https?:\/\//i.test(trimmedUrl)) return trimmedUrl;
+  if (prefix.trim()) {
+    return `${prefix.replace(/\/$/, "")}/${trimmedUrl.replace(/^\//, "")}`;
+  }
+  if (trimmedUrl.startsWith("/")) {
+    return `https://image.manzu365.com${trimmedUrl}`;
+  }
+  return trimmedUrl;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

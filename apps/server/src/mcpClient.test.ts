@@ -22,11 +22,106 @@ describe("McpClient", () => {
         method: "POST",
         headers: expect.objectContaining({
           Authorization: "Bearer secret",
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream"
         }),
         body: expect.stringContaining("\"method\":\"tools/call\"")
       })
     );
+  });
+
+  it("parses MCP SDK text event-stream JSON-RPC responses", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? "text/event-stream" : null) },
+      text: async () => [
+        "event: message",
+        `data: ${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  rows: [
+                    {
+                      house_id: "h-sse",
+                      building_id: "b-sse",
+                      building_name: "SSE 公寓",
+                      house_number: "201",
+                      rent_price: 900,
+                      deposit: 900,
+                      bedroom: 1,
+                      living_room: 0,
+                      toilet: 1,
+                      area: 28,
+                      status: 0,
+                      updated_at: "2026-06-17T00:00:00.000Z",
+                      building: { address: "东平", lng: "113.293204", lat: "23.225461" }
+                    }
+                  ]
+                })
+              }
+            ]
+          }
+        })}`,
+        ""
+      ].join("\n")
+    });
+
+    const client = new McpClient({
+      url: "http://mcp.test/mcp",
+      authToken: "secret",
+      fetchFn: fetchMock
+    });
+
+    await expect(client.searchHouses({ keyword: "东平" })).resolves.toMatchObject([
+      {
+        houseId: "h-sse",
+        rentPrice: 900,
+        lng: 113.293204,
+        lat: 23.225461
+      }
+    ]);
+  });
+
+  it("fetches multiple paginated MCP pages up to maxResults", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildRowsResponse(buildMcpRows(1, 50), {
+        page: 1,
+        pageSize: 50,
+        total: 75,
+        totalPages: 2,
+        hasNext: true
+      }))
+      .mockResolvedValueOnce(buildRowsResponse(buildMcpRows(51, 25), {
+        page: 2,
+        pageSize: 50,
+        total: 75,
+        totalPages: 2,
+        hasNext: false
+      }));
+
+    const client = new McpClient({
+      url: "http://mcp.test/mcp",
+      authToken: "secret",
+      fetchFn: fetchMock
+    });
+
+    await expect(client.searchHouses({ keyword: "东平", pageSize: 50, maxResults: 75 })).resolves.toHaveLength(75);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).params.arguments).toMatchObject({
+      keyword: "东平",
+      page: 1,
+      pageSize: 50
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).params.arguments).toMatchObject({
+      keyword: "东平",
+      page: 2,
+      pageSize: 50
+    });
   });
 
   it("falls back to empty images when house detail image table is missing", async () => {
@@ -288,4 +383,82 @@ describe("McpClient", () => {
       })
     );
   });
+
+  it("normalizes relative detail image urls to the Manzu image host", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                house_id: "h-relative-image",
+                images: [
+                  {
+                    image_url: "/storage/images/202503/19/room.jpg",
+                    prefix: ""
+                  }
+                ]
+              })
+            }
+          ]
+        }
+      })
+    });
+
+    const client = new McpClient({
+      url: "http://mcp.test/mcp",
+      authToken: "secret",
+      fetchFn: fetchMock
+    });
+
+    await expect(client.getHouseImageUrlsSafe("h-relative-image")).resolves.toEqual([
+      "https://image.manzu365.com/storage/images/202503/19/room.jpg"
+    ]);
+  });
 });
+
+function buildRowsResponse(
+  rows: unknown[],
+  pagination: { page: number; pageSize: number; total: number; totalPages: number; hasNext: boolean }
+) {
+  return {
+    ok: true,
+    json: async () => ({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ rows, pagination })
+          }
+        ]
+      }
+    })
+  };
+}
+
+function buildMcpRows(start: number, count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const id = start + index;
+    return {
+      house_id: `h-page-${id}`,
+      building_id: `b-page-${id}`,
+      building_name: "分页公寓",
+      house_number: String(id),
+      rent_price: 1000,
+      deposit: 1000,
+      bedroom: 1,
+      living_room: 0,
+      toilet: 1,
+      area: 30,
+      status: 0,
+      updated_at: "2026-06-17T00:00:00.000Z",
+      building: { lng: "113.293204", lat: "23.225461" }
+    };
+  });
+}

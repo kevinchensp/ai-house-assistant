@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import type { RankedHouse } from "@ai-house-assistant/shared";
 import type { ChatResponse } from "./assistant";
 
 export type UserRole = "admin" | "agent";
@@ -30,6 +31,7 @@ export type StoredCustomerSession = {
   customerName: string;
   status: string;
   latestResponse: ChatResponse | null;
+  latestRecommendationPool: RankedHouse[] | null;
   lastMessageAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -130,6 +132,7 @@ export class JsonAppStore {
       customerName: customerName.trim() || `客户 ${data.sessions.filter((item) => item.ownerUserId === ownerUserId).length + 1}`,
       status: "待输入需求",
       latestResponse: null,
+      latestRecommendationPool: null,
       lastMessageAt: null,
       createdAt: now,
       updatedAt: now
@@ -209,7 +212,13 @@ export class JsonAppStore {
     return message;
   }
 
-  async saveAssistantResult(ownerUserId: string, sessionId: string, result: ChatResponse, assistantText: string): Promise<void> {
+  async saveAssistantResult(
+    ownerUserId: string,
+    sessionId: string,
+    result: ChatResponse,
+    assistantText: string,
+    recommendationPool: RankedHouse[] = result.recommendations
+  ): Promise<void> {
     const data = await this.read();
     const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
     if (!session) {
@@ -218,6 +227,7 @@ export class JsonAppStore {
 
     const now = new Date().toISOString();
     session.latestResponse = result;
+    session.latestRecommendationPool = recommendationPool;
     session.status = deriveStatus(result);
     session.lastMessageAt = now;
     session.updatedAt = now;
@@ -290,8 +300,9 @@ function deriveStatus(result: ChatResponse): string {
     if (result.answerMode === "area_layout_availability") return "已查询空房";
     return result.consultation.summary;
   }
-  if (result.recommendations.length > 0) {
-    return `已推荐 ${result.recommendations.length} 套`;
+  const recommendationTotal = result.recommendationPagination?.total ?? result.recommendations.length;
+  if (recommendationTotal > 0) {
+    return `已推荐 ${recommendationTotal} 套`;
   }
   return "暂无合适房源";
 }
