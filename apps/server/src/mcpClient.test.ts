@@ -419,6 +419,40 @@ describe("McpClient", () => {
       "https://image.manzu365.com/storage/images/202503/19/room.jpg"
     ]);
   });
+
+  it("skips video media when extracting detail image urls", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                house_id: "h-video-first",
+                images: [
+                  { url: "https://img.example.com/room-tour.mp4" },
+                  { image_url: "/storage/images/202503/19/room.jpg", prefix: "" }
+                ]
+              })
+            }
+          ]
+        }
+      })
+    });
+
+    const client = new McpClient({
+      url: "http://mcp.test/mcp",
+      authToken: "secret",
+      fetchFn: fetchMock
+    });
+
+    await expect(client.getHouseImageUrlsSafe("h-video-first")).resolves.toEqual([
+      "https://image.manzu365.com/storage/images/202503/19/room.jpg"
+    ]);
+  });
 });
 
 function buildRowsResponse(

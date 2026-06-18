@@ -243,7 +243,7 @@ function extractImageUrls(value: unknown): string[] {
       const prefix = typeof image.prefix === "string" ? image.prefix : "";
       return typeof url === "string" && url.trim() ? normalizeImageUrl(url, prefix) : null;
     })
-    .filter((url): url is string => Boolean(url));
+    .filter((url): url is string => url !== null && isImageMediaUrl(url));
 }
 
 function normalizeImageUrl(url: string, prefix = ""): string | null {
@@ -257,6 +257,21 @@ function normalizeImageUrl(url: string, prefix = ""): string | null {
     return `https://image.manzu365.com${trimmedUrl}`;
   }
   return trimmedUrl;
+}
+
+function isImageMediaUrl(url: string): boolean {
+  const pathname = stripUrlQueryAndHash(url).toLowerCase();
+  if (/\.(mp4|mov|m4v|webm|avi|wmv|flv|mkv|3gp|mpeg|mpg)$/.test(pathname)) {
+    return false;
+  }
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|avif|heic|heif|svg)$/.test(pathname)) {
+    return true;
+  }
+  return true;
+}
+
+function stripUrlQueryAndHash(url: string): string {
+  return url.split(/[?#]/, 1)[0] ?? url;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
