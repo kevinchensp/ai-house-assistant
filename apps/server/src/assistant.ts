@@ -797,7 +797,10 @@ async function resolveTurnRequirement(
   if (priorRequirement && isNearbyAcceptance(message)) {
     return widenRequirementForNearby(priorRequirement, { widenBudget: isBudgetWidening(message) });
   }
-  const requirement = mergeMessagePreferenceFeatures(await extractRequirementWithFallback(dependencies, message), message);
+  const requirement = sanitizeNonLocationRequirement(
+    mergeMessagePreferenceFeatures(await extractRequirementWithFallback(dependencies, message), message),
+    message
+  );
   if (priorRequirement && isIncrementalPreferenceUpdate(message, requirement)) {
     return mergeRequirementSummary(priorRequirement, {
       ...requirement,
@@ -814,6 +817,21 @@ async function resolveTurnRequirement(
     });
   }
   return normalizeFollowUpQuestion(await resolveRequirementLocation(dependencies, message, requirement));
+}
+
+function sanitizeNonLocationRequirement(
+  requirement: RequirementExtraction,
+  message: string
+): RequirementExtraction {
+  if (!requirement.location) return requirement;
+  const locationText = `${requirement.location.raw} ${requirement.location.normalized}`;
+  if (!isNonLocationDemandText(message) && !isNonLocationDemandText(locationText)) {
+    return requirement;
+  }
+  return validateRequirementExtraction({
+    ...requirement,
+    location: null
+  });
 }
 
 function mergeMessagePreferenceFeatures(requirement: RequirementExtraction, message: string): RequirementExtraction {
@@ -936,6 +954,9 @@ function isClientResolvedLocationUsable(
   modelLocation: RequirementExtraction["location"],
   clientLocation: ResolvedLocation | null
 ): clientLocation is ResolvedLocation {
+  if (isNonLocationDemandText(message)) {
+    return false;
+  }
   if (!clientLocation) {
     return false;
   }
@@ -959,6 +980,29 @@ function isClientResolvedLocationUsable(
 
 function normalizeLocationText(text: string): string {
   return text.replace(/\s+/g, "").replace(/市/g, "");
+}
+
+function isNonLocationDemandText(text: string): boolean {
+  return isBudgetOnlyText(text) || isPreferenceOnlyText(text);
+}
+
+function isBudgetOnlyText(text: string): boolean {
+  const compact = text.replace(/[，。,.\s？?]/g, "");
+  if (!compact) return false;
+  if (!/[0-9一二三四五六七八九十百千万两]/.test(compact)) return false;
+  const withoutBudget = compact
+    .replace(/(?:预算|租金|价格|价位|大概|大约|差不多|控制在|希望|想要|要|找|房子|房源|客户|左右|上下|以内|以下|附近|出头|元|块|k|K)/g, "")
+    .replace(/[0-9一二三四五六七八九十百千万两]+/g, "");
+  return withoutBudget.length === 0;
+}
+
+function isPreferenceOnlyText(text: string): boolean {
+  const compact = text.replace(/[，。,.\s？?]/g, "");
+  if (!compact) return false;
+  const withoutPreferences = compact
+    .replace(/(?:最好|希望|想要|要|客户|房子|房源|可以|可|能|允许|有|带|靠近|离|近|比较|大一点|大点|宠物|养宠物|养猫|养狗|宠物友好|阳台|地铁|地铁站|地铁口|大单间)/g, "")
+    .trim();
+  return withoutPreferences.length === 0;
 }
 
 function isAdministrativeOnlyLocationText(text: string): boolean {

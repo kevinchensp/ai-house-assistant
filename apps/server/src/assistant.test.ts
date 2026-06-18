@@ -175,6 +175,86 @@ describe("assistant", () => {
     expect(response.searchTrace).toEqual([]);
   });
 
+  it("does not treat a budget-only message as a location even if the model does", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => []
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: {
+            raw: "1000左右",
+            normalized: "1000左右",
+            city: "广州",
+            district: null,
+            placeType: "poi",
+            center: { lng: 113.3, lat: 23.2 },
+            confidence: 0.86
+          },
+          budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+          layout: { bedroom: null, livingRoom: null, toilet: null, confidence: 0.2 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: ["layout"],
+          shouldAskFollowUp: true,
+          followUpQuestion: "请确认客户的户型要求。"
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-budget-only-location",
+      message: "1000左右"
+    });
+
+    expect(response.requirement.location).toBeNull();
+    expect(response.requirement.budget?.target).toBe(1000);
+    expect(response.requirement.missingRequiredSlots).toEqual(["location", "layout"]);
+    expect(response.followUpQuestion).toContain("具体位置");
+    expect(response.followUpQuestion).toContain("户型");
+    expect(response.followUpQuestion).not.toContain("预算");
+    expect(response.searchTrace).toEqual([]);
+  });
+
+  it("does not accept a client POI for a budget-only message", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => []
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z"),
+      llmProvider: {
+        extractRequirement: async () => ({
+          location: null,
+          budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+          layout: { bedroom: null, livingRoom: null, toilet: null, confidence: 0.2 },
+          preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: [] },
+          missingRequiredSlots: ["location", "layout"],
+          shouldAskFollowUp: true,
+          followUpQuestion: "请确认客户的位置和户型要求。"
+        })
+      }
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-budget-only-client-location",
+      message: "1000左右",
+      clientResolvedLocation: {
+        raw: "1000左右",
+        normalized: "1000左右",
+        city: "广州",
+        district: null,
+        placeType: "poi",
+        center: { lng: 113.3, lat: 23.2 },
+        confidence: 0.9
+      }
+    });
+
+    expect(response.requirement.location).toBeNull();
+    expect(response.requirement.budget?.target).toBe(1000);
+    expect(response.requirement.missingRequiredSlots).toEqual(["location", "layout"]);
+    expect(response.searchTrace).toEqual([]);
+  });
+
   it("recommends ranked fallback houses from MCP results", async () => {
     const assistant = createAssistant({
       mcpClient: {

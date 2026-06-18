@@ -1351,6 +1351,7 @@ function loadAmap(key: string): Promise<AMapGlobal> {
 
 async function resolveClientLocation(message: string): Promise<ClientResolvedLocation | null> {
   if (!amapWebMapKey) return null;
+  if (isNonLocationDemandText(message)) return null;
   const AMap = await loadAmap(amapWebMapKey);
   await loadAmapPlugins(AMap, ["AMap.PlaceSearch"]);
   const placeSearch = new AMap.PlaceSearch({ city: "广州", citylimit: true, pageSize: 5, pageIndex: 1 });
@@ -1420,6 +1421,29 @@ function stripAdministrativePrefix(query: string): string {
 
 function isAdministrativeOnlyLocationCandidate(candidate: string): boolean {
   return /^(广州|广州市|白云|白云区|广州市白云区|黄埔|黄埔区|广州市黄埔区)$/.test(candidate.trim());
+}
+
+function isNonLocationDemandText(text: string): boolean {
+  return isBudgetOnlyText(text) || isPreferenceOnlyText(text);
+}
+
+function isBudgetOnlyText(text: string): boolean {
+  const compact = text.replace(/[，。,.\s？?]/g, "");
+  if (!compact) return false;
+  if (!/[0-9一二三四五六七八九十百千万两]/.test(compact)) return false;
+  const withoutBudget = compact
+    .replace(/(?:预算|租金|价格|价位|大概|大约|差不多|控制在|希望|想要|要|找|房子|房源|客户|左右|上下|以内|以下|附近|出头|元|块|k|K)/g, "")
+    .replace(/[0-9一二三四五六七八九十百千万两]+/g, "");
+  return withoutBudget.length === 0;
+}
+
+function isPreferenceOnlyText(text: string): boolean {
+  const compact = text.replace(/[，。,.\s？?]/g, "");
+  if (!compact) return false;
+  const withoutPreferences = compact
+    .replace(/(?:最好|希望|想要|要|客户|房子|房源|可以|可|能|允许|有|带|靠近|离|近|比较|大一点|大点|宠物|养宠物|养猫|养狗|宠物友好|阳台|地铁|地铁站|地铁口|大单间)/g, "")
+    .trim();
+  return withoutPreferences.length === 0;
 }
 
 function getAmapPoiCoordinate(poi: AMapPoi | undefined) {
