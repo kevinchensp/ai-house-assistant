@@ -56,5 +56,6 @@ GitHub 仓库 > Actions > Deploy > Run workflow
 ## 注意
 
 - 自动部署会保留服务器上的 `.env` 文件。
+- 自动部署会先清理旧 release 文件再解压新代码，避免过期文件残留影响构建。
 - 自动部署会重建 `ai-house-assistant-app:latest` 镜像。
 - 业务数据在 Docker volume `app-data` 中，不会因为重建镜像丢失。

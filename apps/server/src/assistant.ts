@@ -1,6 +1,7 @@
 import {
   type Budget,
   type Coordinate,
+  type CustomerProfile,
   type House,
   type RankedHouse,
   type RequirementExtraction,
@@ -34,6 +35,7 @@ export type ChatRequest = {
   sessionId: string;
   message: string;
   clientResolvedLocation?: ResolvedLocation | null;
+  customerProfile?: CustomerProfile | null;
 };
 
 export type SearchTraceStep = {
@@ -47,7 +49,12 @@ export type ChatResponse = {
   answerMode:
     | "recommend_houses"
     | "project_vacancy"
+    | "building_detail"
     | "area_inventory"
+    | "feature_inventory"
+    | "move_in_inventory"
+    | "payment_inventory"
+    | "commute_ranking"
     | "metro_line_inventory"
     | "metro_station_inventory"
     | "price_range"
@@ -119,7 +126,12 @@ const metroLineStations: Record<string, string[]> = {
 
 type ConsultationIntent =
   | { type: "project_vacancy"; projectName: string }
+  | { type: "building_detail"; projectName: string }
   | { type: "area_inventory"; locationKeyword: string }
+  | { type: "feature_inventory"; locationKeyword: string; feature: string }
+  | { type: "move_in_inventory"; locationKeyword: string; moveInDate: string | null }
+  | { type: "payment_inventory"; locationKeyword: string; payment: string }
+  | { type: "commute_ranking"; locationKeyword: string; destinationKeyword: string }
   | { type: "metro_line_inventory"; lineName: string }
   | { type: "metro_station_inventory"; stationName: string; lineName: string | null }
   | {
@@ -196,38 +208,60 @@ export function createAssistant(dependencies: AssistantDependencies) {
       }
 
       sessionState.set(request.sessionId, requirement);
+      return recommendFromRequirement(dependencies, request.sessionId, requirement, request.customerProfile ?? null);
+    },
 
-      const { houses, searchTrace } = await searchWithFallbacks(dependencies, request.sessionId, requirement);
-      const locationFilteredHouses = filterHousesForLocation(houses, requirement.location?.center ?? null);
-      const rankedRecommendations = rankHouses(locationFilteredHouses, {
-        budget: requirement.budget,
-        layout: requirement.layout,
-        center: requirement.location?.center ?? null
-      });
-      const recommendations = await enrichRecommendationImages(dependencies, rankedRecommendations);
-
-      dependencies.eventLogger.record("recommendation_shown", {
-        sessionId: request.sessionId,
-        payload: { houseIds: recommendations.map((house) => house.houseId) }
-      });
-
-      const salesReply = buildSalesReply(requirement, recommendations, searchTrace);
-      dependencies.eventLogger.record("reply_generated", {
-        sessionId: request.sessionId,
-        payload: salesReply
-      });
-
-      return {
-        sessionId: request.sessionId,
-        answerMode: "recommend_houses",
-        requirement,
-        followUpQuestion: null,
-        searchTrace,
-        recommendations,
-        consultation: null,
-        salesReply
-      };
+    async recommendFromRequirement(
+      sessionId: string,
+      requirement: RequirementExtraction,
+      customerProfile: CustomerProfile | null = null
+    ): Promise<ChatResponse> {
+      const normalizedRequirement = normalizeFollowUpQuestion(validateRequirementExtraction(requirement));
+      sessionState.set(sessionId, normalizedRequirement);
+      return recommendFromRequirement(dependencies, sessionId, normalizedRequirement, customerProfile);
     }
+  };
+}
+
+async function recommendFromRequirement(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  requirement: RequirementExtraction,
+  customerProfile: CustomerProfile | null = null
+): Promise<ChatResponse> {
+  const { houses, searchTrace } = await searchWithFallbacks(dependencies, sessionId, requirement);
+  const locationFilteredHouses = filterHousesForLocation(houses, requirement.location?.center ?? null);
+  const rankedRecommendations = rankHouses(locationFilteredHouses, {
+    budget: requirement.budget,
+    layout: requirement.layout,
+    center: requirement.location?.center ?? null
+  });
+  const recommendations = applyCustomerProfileRanking(
+    await enrichRecommendationImages(dependencies, rankedRecommendations),
+    requirement,
+    customerProfile
+  );
+
+  dependencies.eventLogger.record("recommendation_shown", {
+    sessionId,
+    payload: { houseIds: recommendations.map((house) => house.houseId) }
+  });
+
+  const salesReply = buildSalesReply(requirement, recommendations, searchTrace, customerProfile);
+  dependencies.eventLogger.record("reply_generated", {
+    sessionId,
+    payload: salesReply
+  });
+
+  return {
+    sessionId,
+    answerMode: "recommend_houses",
+    requirement,
+    followUpQuestion: null,
+    searchTrace,
+    recommendations,
+    consultation: null,
+    salesReply
   };
 }
 
@@ -254,6 +288,32 @@ function normalizeAssistantIntent(intent: AssistantIntent): ConsultationIntent |
   }
   if (intent.type === "project_vacancy") {
     return intent.projectName.trim() ? { type: "project_vacancy", projectName: intent.projectName.trim() } : null;
+  }
+  if (intent.type === "building_detail") {
+    return intent.projectName.trim() ? { type: "building_detail", projectName: intent.projectName.trim() } : null;
+  }
+  if (intent.type === "feature_inventory") {
+    const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+    return locationKeyword && intent.feature.trim()
+      ? { type: "feature_inventory", locationKeyword, feature: intent.feature.trim() }
+      : null;
+  }
+  if (intent.type === "move_in_inventory") {
+    const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+    return locationKeyword ? { type: "move_in_inventory", locationKeyword, moveInDate: intent.moveInDate } : null;
+  }
+  if (intent.type === "payment_inventory") {
+    const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+    return locationKeyword && intent.payment.trim()
+      ? { type: "payment_inventory", locationKeyword, payment: intent.payment.trim() }
+      : null;
+  }
+  if (intent.type === "commute_ranking") {
+    const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
+    const destinationKeyword = normalizeConsultationLocationKeyword(intent.destinationKeyword);
+    return locationKeyword && destinationKeyword
+      ? { type: "commute_ranking", locationKeyword, destinationKeyword }
+      : null;
   }
   if (intent.type === "area_inventory") {
     const locationKeyword = normalizeConsultationLocationKeyword(intent.locationKeyword);
@@ -307,6 +367,46 @@ function detectConsultationIntent(message: string): ConsultationIntent | null {
     return { type: "project_vacancy", projectName: projectMatch[1] };
   }
 
+  const buildingDetailMatch = compact.match(/^(.+?)(?:详情|介绍|配置|怎么样|有哪些户型|有什么户型)/);
+  if (buildingDetailMatch?.[1]) {
+    return { type: "building_detail", projectName: buildingDetailMatch[1] };
+  }
+
+  const feature = extractFeatureIntent(compact);
+  if (feature) {
+    return {
+      type: "feature_inventory",
+      locationKeyword: extractConsultationLocationKeyword(compact) ?? "目标区域",
+      feature
+    };
+  }
+
+  const payment = extractPaymentIntent(compact);
+  if (payment) {
+    return {
+      type: "payment_inventory",
+      locationKeyword: extractConsultationLocationKeyword(compact) ?? "目标区域",
+      payment
+    };
+  }
+
+  if (/随时入住|马上入住|近期入住|本周入住|月底入住|入住/.test(compact)) {
+    return {
+      type: "move_in_inventory",
+      locationKeyword: extractConsultationLocationKeyword(compact) ?? "目标区域",
+      moveInDate: extractMoveInDate(compact)
+    };
+  }
+
+  const commuteMatch = compact.match(/(.+?)(?:到|去|离)(.+?)(?:通勤|上班|多久|近不近|方便吗)/);
+  if (commuteMatch?.[1] && commuteMatch[2]) {
+    return {
+      type: "commute_ranking",
+      locationKeyword: normalizeConsultationLocationKeyword(commuteMatch[1]) ?? commuteMatch[1],
+      destinationKeyword: normalizeConsultationLocationKeyword(commuteMatch[2]) ?? commuteMatch[2]
+    };
+  }
+
   if (/有什么(?:房子|房源|房|空房)|有哪些(?:房子|房源|房|空房)/.test(compact)) {
     const layout = extractConsultationLayout(compact);
     const locationKeyword = extractConsultationLocationKeyword(compact);
@@ -345,6 +445,21 @@ async function handleConsultation(
 ): Promise<ChatResponse> {
   if (intent.type === "project_vacancy") {
     return handleProjectVacancy(dependencies, sessionId, intent);
+  }
+  if (intent.type === "building_detail") {
+    return handleBuildingDetail(dependencies, sessionId, intent);
+  }
+  if (intent.type === "feature_inventory") {
+    return handleFeatureInventory(dependencies, sessionId, intent);
+  }
+  if (intent.type === "move_in_inventory") {
+    return handleMoveInInventory(dependencies, sessionId, intent);
+  }
+  if (intent.type === "payment_inventory") {
+    return handlePaymentInventory(dependencies, sessionId, intent);
+  }
+  if (intent.type === "commute_ranking") {
+    return handleCommuteRanking(dependencies, sessionId, intent);
   }
   if (intent.type === "area_inventory") {
     return handleAreaInventory(dependencies, sessionId, intent);
@@ -590,6 +705,150 @@ async function handleProjectVacancy(
     searchTrace: [{ name: "project_vacancy", arguments: args, resultCount: houses.length }],
     salesReply: {
       text: buildProjectVacancyReply(intent.projectName, recommendations),
+      nextAction: "copy_reply"
+    }
+  });
+}
+
+async function handleBuildingDetail(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "building_detail" }>
+): Promise<ChatResponse> {
+  const args = { keyword: intent.projectName, status: 0, pageSize: mcpPageSize, maxResults: consultationMaxResults };
+  const houses = await callSearch(dependencies, sessionId, "building_detail", args);
+  const recommendations = await enrichRecommendationImages(dependencies, rankHouses(houses, {
+    budget: null,
+    layout: { bedroom: null, livingRoom: null, toilet: null },
+    center: null
+  }));
+  const consultation = {
+    title: `${intent.projectName}楼栋详情`,
+    summary: recommendations.length
+      ? `${intent.projectName}当前查到 ${recommendations.length} 套空房，可按价格、面积、户型先给客户介绍。`
+      : `${intent.projectName}当前暂未查到空房，建议确认楼栋/项目名称是否准确。`,
+    metrics: [
+      { label: "空房数", value: `${recommendations.length}套` },
+      { label: "户型覆盖", value: formatLayoutCoverage(recommendations) },
+      { label: "价格范围", value: formatPriceRange(recommendations) }
+    ]
+  };
+
+  return buildConsultationResponse({
+    sessionId,
+    answerMode: "building_detail",
+    consultation,
+    recommendations,
+    searchTrace: [{ name: "building_detail", arguments: args, resultCount: houses.length }],
+    salesReply: {
+      text: buildBuildingDetailReply(intent.projectName, recommendations),
+      nextAction: "copy_reply"
+    }
+  });
+}
+
+async function handleFeatureInventory(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "feature_inventory" }>,
+  answerMode: ChatResponse["answerMode"] = "feature_inventory"
+): Promise<ChatResponse> {
+  const center = await resolveConsultationCenter(dependencies, intent.locationKeyword);
+  const args = {
+    keyword: `${intent.locationKeyword} ${intent.feature}`,
+    status: 0,
+    pageSize: mcpPageSize,
+    maxResults: consultationMaxResults
+  };
+  const houses = await callSearch(dependencies, sessionId, "feature_inventory", args);
+  const recommendations = await enrichRecommendationImages(dependencies, rankHouses(houses, {
+    budget: null,
+    layout: { bedroom: null, livingRoom: null, toilet: null },
+    center
+  }).sort((a, b) => compareDistanceThenScore(a, b)));
+  const consultation = {
+    title: `${intent.locationKeyword}${intent.feature}房源`,
+    summary: recommendations.length
+      ? `${intent.locationKeyword}当前查到 ${recommendations.length} 套可能满足“${intent.feature}”的空房，建议以房源详情最终确认为准。`
+      : `${intent.locationKeyword}暂未查到明确匹配“${intent.feature}”的空房。`,
+    metrics: [
+      { label: "条件", value: intent.feature },
+      { label: "空房数", value: `${recommendations.length}套` },
+      { label: "价格范围", value: formatPriceRange(recommendations) }
+    ]
+  };
+
+  return buildConsultationResponse({
+    sessionId,
+    answerMode,
+    consultation,
+    recommendations,
+    searchTrace: [{ name: "feature_inventory", arguments: args, resultCount: houses.length }],
+    salesReply: {
+      text: buildFeatureInventoryReply(intent.locationKeyword, intent.feature, recommendations),
+      nextAction: "copy_reply"
+    },
+    requirement: addConsultationFeature(buildConsultationRequirement(intent.locationKeyword, center), intent.feature)
+  });
+}
+
+async function handleMoveInInventory(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "move_in_inventory" }>
+): Promise<ChatResponse> {
+  return handleFeatureInventory(dependencies, sessionId, {
+    type: "feature_inventory",
+    locationKeyword: intent.locationKeyword,
+    feature: intent.moveInDate ?? "近期可入住"
+  }, "move_in_inventory");
+}
+
+async function handlePaymentInventory(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "payment_inventory" }>
+): Promise<ChatResponse> {
+  return handleFeatureInventory(dependencies, sessionId, {
+    type: "feature_inventory",
+    locationKeyword: intent.locationKeyword,
+    feature: intent.payment
+  }, "payment_inventory");
+}
+
+async function handleCommuteRanking(
+  dependencies: AssistantDependencies,
+  sessionId: string,
+  intent: Extract<ConsultationIntent, { type: "commute_ranking" }>
+): Promise<ChatResponse> {
+  const destinationCenter = await resolveConsultationCenter(dependencies, intent.destinationKeyword);
+  const args = { keyword: intent.locationKeyword, status: 0, pageSize: mcpPageSize, maxResults: consultationMaxResults };
+  const houses = await callSearch(dependencies, sessionId, "commute_ranking", args);
+  const recommendations = await enrichRecommendationImages(dependencies, rankHouses(houses, {
+    budget: null,
+    layout: { bedroom: null, livingRoom: null, toilet: null },
+    center: destinationCenter
+  }).sort((a, b) => compareDistanceThenScore(a, b)), { prioritizeImages: false });
+  const consultation = {
+    title: `${intent.locationKeyword}到${intent.destinationKeyword}通勤参考`,
+    summary: destinationCenter
+      ? `已按房源到${intent.destinationKeyword}的直线距离排序，实际通勤时间建议结合地图路线再确认。`
+      : `暂时无法解析${intent.destinationKeyword}坐标，先按${intent.locationKeyword}空房给出参考。`,
+    metrics: [
+      { label: "目的地", value: intent.destinationKeyword },
+      { label: "参考房源", value: `${recommendations.length}套` },
+      { label: "最近距离", value: recommendations[0]?.distanceMeters !== null && recommendations[0]?.distanceMeters !== undefined ? formatDistance(recommendations[0].distanceMeters) : "待确认" }
+    ]
+  };
+
+  return buildConsultationResponse({
+    sessionId,
+    answerMode: "commute_ranking",
+    consultation,
+    recommendations,
+    searchTrace: [{ name: "commute_ranking", arguments: args, resultCount: houses.length }],
+    salesReply: {
+      text: buildCommuteReply(intent.locationKeyword, intent.destinationKeyword, recommendations),
       nextAction: "copy_reply"
     }
   });
@@ -1025,8 +1284,10 @@ function extractConsultationLayout(message: string): { bedroom: number | null; l
 function extractConsultationLocationKeyword(message: string): string | null {
   const cleaned = message
     .replace(/^(?:广州(?:市)?)?(?:白云区|白云|黄埔区|黄埔)?/, "")
+    .replace(/可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物|带阳台|有阳台|阳台|电梯房|有电梯|电梯|近地铁|靠近地铁|地铁口|离地铁近/g, "")
+    .replace(/押一付一|押1付1|月付|按月付|押金|付款方式|怎么付|随时入住|马上入住|近期入住|本周入住|月底入住|入住/g, "")
     .replace(/一居室|一房|一室一厅|一室|单间|两房|两室|三房|三室|1室1厅|1室|2室|3室/g, "")
-    .replace(/价格范围|租金范围|价位|多少钱|离地铁最近|距离地铁最近|最近地铁|按距离|房源排序|有什么|有哪些|房源|房子|空房|排序|的/g, "")
+    .replace(/价格范围|租金范围|价位|多少钱|离地铁最近|距离地铁最近|最近地铁|按距离|房源排序|有没有|还有没有|有无|有什么|有哪些|房源|房子|空房|排序|的/g, "")
     .replace(/[？?。,.，\s]/g, "")
     .trim();
   return cleaned.length >= 2 ? cleaned : null;
@@ -1170,6 +1431,36 @@ function buildProjectVacancyReply(projectName: string, recommendations: RankedHo
   return `${projectName}目前查到 ${recommendations.length} 套空房：\n${lines.join("\n")}\n可以先把价格和户型最合适的发给客户确认。`;
 }
 
+function buildBuildingDetailReply(projectName: string, recommendations: RankedHouse[]): string {
+  if (recommendations.length === 0) {
+    return `${projectName}我这边暂时没查到空房，建议先确认项目/楼栋名称是否准确，或者我帮您查同商圈附近项目。`;
+  }
+  const lines = recommendations
+    .slice(0, 4)
+    .map((house, index) => `${index + 1}. ${house.houseNumber}，${house.bedroom}室${house.livingRoom}厅，${house.area}平，${house.rentPrice}元`);
+  return `${projectName}目前有空房，户型覆盖 ${formatLayoutCoverage(recommendations)}，价格范围 ${formatPriceRange(recommendations)}。\n${lines.join("\n")}\n可以先按客户预算和户型挑最合适的发过去。`;
+}
+
+function buildFeatureInventoryReply(locationKeyword: string, feature: string, recommendations: RankedHouse[]): string {
+  if (recommendations.length === 0) {
+    return `${locationKeyword}暂时没查到明确满足“${feature}”的空房。可以先确认客户是否接受周边或换一个相近条件。`;
+  }
+  const lines = recommendations
+    .slice(0, 4)
+    .map((house, index) => `${index + 1}. ${house.buildingName} ${house.houseNumber}，${house.bedroom}室${house.livingRoom}厅，${house.area}平，${house.rentPrice}元，${house.recommendationReason || "可先核实房源详情"}`);
+  return `${locationKeyword}我先按“${feature}”帮您筛了一版，查到 ${recommendations.length} 套可参考房源：\n${lines.join("\n")}\n这类条件建议发给客户前再点详情确认一次。`;
+}
+
+function buildCommuteReply(locationKeyword: string, destinationKeyword: string, recommendations: RankedHouse[]): string {
+  if (recommendations.length === 0) {
+    return `${locationKeyword}到${destinationKeyword}这条通勤需求暂时没有查到合适空房，可以换周边商圈或具体地铁站再查。`;
+  }
+  const lines = recommendations
+    .slice(0, 4)
+    .map((house, index) => `${index + 1}. ${house.buildingName} ${house.houseNumber}，${house.rentPrice}元，距离${destinationKeyword}${formatOptionalDistance(house.distanceMeters)}`);
+  return `我按到${destinationKeyword}的距离给您排了一版，${locationKeyword}可参考这几套：\n${lines.join("\n")}\n实际通勤时间建议再结合地图路线确认。`;
+}
+
 function buildAreaInventoryReply(locationKeyword: string, recommendations: RankedHouse[]): string {
   if (recommendations.length === 0) {
     return `${locationKeyword}这边我暂时没看到合适空房。您方便的话可以告诉我预算和想看的户型，我再帮您往附近一起找找。`;
@@ -1224,9 +1515,51 @@ function formatLayoutCoverage(recommendations: RankedHouse[]): string {
   return labels.length ? labels.join("、") : "暂无";
 }
 
+function formatPriceRange(recommendations: RankedHouse[]): string {
+  const prices = recommendations.map((house) => house.rentPrice).filter((price) => price > 0);
+  return prices.length ? `${Math.min(...prices)}-${Math.max(...prices)}元` : "暂无";
+}
+
+function addConsultationFeature(requirement: RequirementExtraction, feature: string): RequirementExtraction {
+  return validateRequirementExtraction({
+    ...requirement,
+    preferences: {
+      ...requirement.preferences,
+      features: Array.from(new Set([...(requirement.preferences.features ?? []), feature]))
+    }
+  });
+}
+
+function extractFeatureIntent(message: string): string | null {
+  if (/可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物/.test(message)) return "可养宠物";
+  if (/阳台|带阳台|有阳台/.test(message)) return "带阳台";
+  if (/电梯|有电梯|电梯房/.test(message)) return "电梯房";
+  if (/近地铁|靠近地铁|地铁口|离地铁近/.test(message)) return "近地铁";
+  return null;
+}
+
+function extractPaymentIntent(message: string): string | null {
+  if (/押一付一|押1付1/.test(message)) return "押一付一";
+  if (/月付|按月付/.test(message)) return "月付";
+  if (/押金|付款方式|怎么付/.test(message)) return "付款方式";
+  return null;
+}
+
+function extractMoveInDate(message: string): string | null {
+  if (/随时入住|马上入住/.test(message)) return "随时入住";
+  if (/本周入住/.test(message)) return "本周入住";
+  if (/月底入住/.test(message)) return "月底入住";
+  if (/近期入住/.test(message)) return "近期入住";
+  return null;
+}
+
 function formatDistance(distance: number): string {
   if (distance < 1000) return `${Math.round(distance)}米`;
   return `${(distance / 1000).toFixed(1)}公里`;
+}
+
+function formatOptionalDistance(distance: number | null | undefined): string {
+  return distance === null || distance === undefined ? "待确认" : formatDistance(distance);
 }
 
 function buildFollowUpQuestion(missingRequiredSlots: string[]): string {
@@ -1316,7 +1649,7 @@ async function searchWithFallbacks(
     const geo = await callGeoSearch(dependencies, sessionId, "geo_radius_fallback", geoArgs);
     trace.push({ name: "geo_radius_fallback", arguments: omitEmptyArgs(geoArgs), resultCount: geo.length });
     if (strict.length + geo.length > 0) {
-      return { houses: [...strict, ...geo], searchTrace: trace };
+      return { houses: uniqueHouses([...strict, ...geo]), searchTrace: trace };
     }
   }
 
@@ -1333,7 +1666,7 @@ async function searchWithFallbacks(
   const fallback = await callSearch(dependencies, sessionId, "district_fallback", fallbackArgs);
   trace.push({ name: "district_fallback", arguments: omitEmptyArgs(fallbackArgs), resultCount: fallback.length });
   if (strict.length + fallback.length > 0) {
-    return { houses: [...strict, ...fallback], searchTrace: trace };
+    return { houses: uniqueHouses([...strict, ...fallback]), searchTrace: trace };
   }
 
   const expandedBudget = buildExpandedBudget(budget);
@@ -1348,7 +1681,7 @@ async function searchWithFallbacks(
     resultCount: budgetFallback.length
   });
   if (budgetFallback.length > 0) {
-    return { houses: [...strict, ...fallback, ...budgetFallback], searchTrace: trace };
+    return { houses: uniqueHouses([...strict, ...fallback, ...budgetFallback]), searchTrace: trace };
   }
 
   const inventoryBudgetFallbackArgs = {
@@ -1373,9 +1706,13 @@ async function searchWithFallbacks(
   });
 
   return {
-    houses: [...strict, ...fallback, ...budgetFallback, ...inventoryBudgetFallback],
+    houses: uniqueHouses([...strict, ...fallback, ...budgetFallback, ...inventoryBudgetFallback]),
     searchTrace: trace
   };
+}
+
+function uniqueHouses(houses: House[]): House[] {
+  return Array.from(new Map(houses.map((house) => [house.houseId, house])).values());
 }
 
 function filterHousesForLocation(houses: House[], center: Coordinate | null): House[] {
@@ -1502,10 +1839,57 @@ function prioritizeImageBackedRecommendations(recommendations: RankedHouse[]): R
     .map(({ house }) => house);
 }
 
+function applyCustomerProfileRanking(
+  recommendations: RankedHouse[],
+  requirement: RequirementExtraction,
+  customerProfile: CustomerProfile | null
+): RankedHouse[] {
+  if (!customerProfile) {
+    return recommendations;
+  }
+  return recommendations
+    .map((house, index) => ({ house, index }))
+    .sort((a, b) => {
+      const profileScoreDiff =
+        getCustomerProfileScore(b.house, requirement, customerProfile) -
+        getCustomerProfileScore(a.house, requirement, customerProfile);
+      if (profileScoreDiff !== 0) return profileScoreDiff;
+      return a.index - b.index;
+    })
+    .map(({ house }) => house);
+}
+
+function getCustomerProfileScore(
+  house: RankedHouse,
+  requirement: RequirementExtraction,
+  customerProfile: CustomerProfile
+): number {
+  let score = 0;
+  if (customerProfile.distanceSensitive && house.distanceMeters !== null) {
+    score += Math.max(0, 20 - Math.floor(house.distanceMeters / 300));
+  }
+  if (
+    customerProfile.budgetSensitive &&
+    requirement.budget &&
+    house.rentPrice >= requirement.budget.min &&
+    house.rentPrice <= requirement.budget.max
+  ) {
+    score += 18;
+  }
+  if (customerProfile.layoutStrict && requirement.layout.bedroom !== null && house.bedroom === requirement.layout.bedroom) {
+    score += 16;
+  }
+  if (customerProfile.needsImages && house.coverImageUrl) {
+    score += 12;
+  }
+  return score;
+}
+
 function buildSalesReply(
   requirement: RequirementExtraction,
   recommendations: RankedHouse[],
-  searchTrace: SearchTraceStep[]
+  searchTrace: SearchTraceStep[],
+  customerProfile: CustomerProfile | null = null
 ): { text: string; nextAction: string } {
   if (recommendations.length === 0) {
     return {
@@ -1519,6 +1903,7 @@ function buildSalesReply(
   const prefix = strictHadResults
     ? `${requirement.location?.normalized ?? "目标位置"}附近有几套比较匹配的房源。`
     : `${requirement.location?.normalized ?? "目标位置"}附近暂时没看到完全匹配的${requirementLayout} ${requirement.budget?.target ?? ""} 左右房源，我帮您往周边扩大了一圈。`;
+  const profileHint = buildCustomerProfileReplyHint(customerProfile);
   const lines = recommendations
     .slice(0, 3)
     .map(
@@ -1527,9 +1912,20 @@ function buildSalesReply(
     );
 
   return {
-    text: `${prefix}\n${lines.join("\n")}\n您看我先发两套最接近的给客户确认吗？`,
+    text: `${prefix}${profileHint ? `\n${profileHint}` : ""}\n${lines.join("\n")}\n您看我先发两套最接近的给客户确认吗？`,
     nextAction: "copy_reply"
   };
+}
+
+function buildCustomerProfileReplyHint(customerProfile: CustomerProfile | null): string | null {
+  if (!customerProfile) return null;
+  const hints: string[] = [];
+  if (customerProfile.distanceSensitive) hints.push("客户之前比较在意位置距离，这次我优先把近的排前面");
+  if (customerProfile.budgetSensitive) hints.push("客户之前比较在意价格，这次我优先保留预算内房源");
+  if (customerProfile.layoutStrict) hints.push("客户之前对户型比较严格，这次优先看户型一致的");
+  if (customerProfile.needsImages) hints.push("客户之前比较在意图片，这次优先展示有图房源");
+  if (customerProfile.decorationSensitive) hints.push("客户之前比较在意装修，建议点详情确认实拍和配置");
+  return hints.length ? hints.join("；") + "。" : null;
 }
 
 function formatRequirementLayout(requirement: RequirementExtraction): string {

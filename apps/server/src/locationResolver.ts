@@ -1,9 +1,11 @@
 import type { ResolvedLocation } from "@ai-house-assistant/shared";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 type AmapLocationResolverOptions = {
   apiKey: string;
   city?: string;
   fetchFn?: typeof fetch;
+  timeoutMs?: number;
 };
 
 type AmapPoi = {
@@ -28,10 +30,12 @@ export type LocationResolver = {
 export class AmapLocationResolver implements LocationResolver {
   private readonly fetchFn: typeof fetch;
   private readonly city: string;
+  private readonly timeoutMs: number;
 
   constructor(private readonly options: AmapLocationResolverOptions) {
     this.fetchFn = options.fetchFn ?? fetch;
     this.city = options.city ?? "广州";
+    this.timeoutMs = options.timeoutMs ?? 5000;
   }
 
   async resolve(query: string): Promise<ResolvedLocation | null> {
@@ -49,7 +53,7 @@ export class AmapLocationResolver implements LocationResolver {
     url.searchParams.set("page", "1");
     url.searchParams.set("extensions", "base");
 
-    const response = await this.fetchFn(url);
+    const response = await fetchWithTimeout(this.fetchFn, url, {}, this.timeoutMs);
     if (!response.ok) {
       throw new Error(`Amap place search failed with HTTP ${response.status}`);
     }

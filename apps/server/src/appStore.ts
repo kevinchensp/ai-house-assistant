@@ -1,7 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import type { RankedHouse } from "@ai-house-assistant/shared";
+import { createEmptyCustomerProfile, type CustomerProfile, type RankedHouse } from "@ai-house-assistant/shared";
 import type { ChatResponse } from "./assistant";
 
 export type UserRole = "admin" | "agent";
@@ -32,6 +32,7 @@ export type StoredCustomerSession = {
   status: string;
   latestResponse: ChatResponse | null;
   latestRecommendationPool: RankedHouse[] | null;
+  customerProfile: CustomerProfile;
   lastMessageAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -39,39 +40,57 @@ export type StoredCustomerSession = {
 
 export type CustomerSessionView = StoredCustomerSession & {
   messages: StoredMessage[];
+  feedbacks: StoredHouseFeedback[];
+};
+
+export type StoredHouseFeedback = {
+  id: string;
+  ownerUserId: string;
+  sessionId: string;
+  houseId: string;
+  isSuitable: boolean;
+  reason: string | null;
+  createdAt: string;
 };
 
 type StoreData = {
   users: AppUser[];
   sessions: StoredCustomerSession[];
   messages: StoredMessage[];
+  feedbacks: StoredHouseFeedback[];
 };
 
 const emptyStore = (): StoreData => ({
   users: [],
   sessions: [],
-  messages: []
+  messages: [],
+  feedbacks: []
 });
 
 export class JsonAppStore {
+  private writeQueue: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly filePath: string) {}
 
-  async ensureAdminUser(): Promise<AppUser> {
-    const data = await this.read();
-    const existing = data.users.find((user) => user.phone === "admin");
-    if (existing) return existing;
+  async ensureAdminUser(initialPassword?: string | null): Promise<AppUser> {
+    return this.mutate((data) => {
+      const existing = data.users.find((user) => user.phone === "admin");
+      if (existing) return existing;
+      if (!initialPassword) {
+        throw new Error("ADMIN_INITIAL_PASSWORD is required to create the initial admin account");
+      }
 
-    const user: AppUser = {
-      id: randomUUID(),
-      name: "管理员",
-      phone: "admin",
-      passwordHash: hashPassword("admin"),
-      role: "admin",
-      createdAt: new Date().toISOString()
-    };
-    data.users.push(user);
-    await this.write(data);
-    return user;
+      const user: AppUser = {
+        id: randomUUID(),
+        name: "管理员",
+        phone: "admin",
+        passwordHash: hashPassword(initialPassword),
+        role: "admin",
+        createdAt: new Date().toISOString()
+      };
+      data.users.push(user);
+      return user;
+    });
   }
 
   async createUser(input: { name: string; phone: string; password: string; role?: UserRole }): Promise<AppUser> {
@@ -81,24 +100,24 @@ export class JsonAppStore {
     if (!cleanPhone) throw new Error("phone is required");
     if (input.password.length < 6) throw new Error("password must be at least 6 characters");
 
-    const data = await this.read();
-    if (data.users.some((user) => user.phone === cleanPhone)) {
-      const error = new Error("phone already exists");
-      (error as Error & { status?: number }).status = 409;
-      throw error;
-    }
+    return this.mutate((data) => {
+      if (data.users.some((user) => user.phone === cleanPhone)) {
+        const error = new Error("phone already exists");
+        (error as Error & { status?: number }).status = 409;
+        throw error;
+      }
 
-    const user: AppUser = {
-      id: randomUUID(),
-      name: cleanName,
-      phone: cleanPhone,
-      passwordHash: hashPassword(input.password),
-      role: input.role ?? "agent",
-      createdAt: new Date().toISOString()
-    };
-    data.users.push(user);
-    await this.write(data);
-    return user;
+      const user: AppUser = {
+        id: randomUUID(),
+        name: cleanName,
+        phone: cleanPhone,
+        passwordHash: hashPassword(input.password),
+        role: input.role ?? "agent",
+        createdAt: new Date().toISOString()
+      };
+      data.users.push(user);
+      return user;
+    });
   }
 
   async findUserByPhone(phone: string): Promise<AppUser | null> {
@@ -123,23 +142,24 @@ export class JsonAppStore {
   }
 
   async createCustomerSession(ownerUserId: string, customerName: string): Promise<CustomerSessionView> {
-    const data = await this.read();
-    this.assertUserExists(data, ownerUserId);
-    const now = new Date().toISOString();
-    const session: StoredCustomerSession = {
-      id: randomUUID(),
-      ownerUserId,
-      customerName: customerName.trim() || `客户 ${data.sessions.filter((item) => item.ownerUserId === ownerUserId).length + 1}`,
-      status: "待输入需求",
-      latestResponse: null,
-      latestRecommendationPool: null,
-      lastMessageAt: null,
-      createdAt: now,
-      updatedAt: now
-    };
-    data.sessions.push(session);
-    await this.write(data);
-    return { ...session, messages: [] };
+    return this.mutate((data) => {
+      this.assertUserExists(data, ownerUserId);
+      const now = new Date().toISOString();
+      const session: StoredCustomerSession = {
+        id: randomUUID(),
+        ownerUserId,
+        customerName: customerName.trim() || `客户 ${data.sessions.filter((item) => item.ownerUserId === ownerUserId).length + 1}`,
+        status: "待输入需求",
+        latestResponse: null,
+        latestRecommendationPool: null,
+        customerProfile: createEmptyCustomerProfile(),
+        lastMessageAt: null,
+        createdAt: now,
+        updatedAt: now
+      };
+      data.sessions.push(session);
+      return { ...session, messages: [], feedbacks: [] };
+    });
   }
 
   async listCustomerSessions(ownerUserId: string): Promise<CustomerSessionView[]> {
@@ -150,7 +170,8 @@ export class JsonAppStore {
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .map((session) => ({
         ...session,
-        messages: data.messages.filter((message) => message.sessionId === session.id)
+        messages: data.messages.filter((message) => message.sessionId === session.id),
+        feedbacks: data.feedbacks.filter((feedback) => feedback.sessionId === session.id)
       }));
   }
 
@@ -162,7 +183,8 @@ export class JsonAppStore {
     }
     return {
       ...session,
-      messages: data.messages.filter((message) => message.sessionId === session.id)
+      messages: data.messages.filter((message) => message.sessionId === session.id),
+      feedbacks: data.feedbacks.filter((feedback) => feedback.sessionId === session.id)
     };
   }
 
@@ -171,18 +193,19 @@ export class JsonAppStore {
     if (!nextName) {
       throw new Error("customer name is required");
     }
-    const data = await this.read();
-    const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
-    if (!session) {
-      throw new Error("customer session not found");
-    }
-    session.customerName = nextName;
-    session.updatedAt = new Date().toISOString();
-    await this.write(data);
-    return {
-      ...session,
-      messages: data.messages.filter((message) => message.sessionId === session.id)
-    };
+    return this.mutate((data) => {
+      const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
+      if (!session) {
+        throw new Error("customer session not found");
+      }
+      session.customerName = nextName;
+      session.updatedAt = new Date().toISOString();
+      return {
+        ...session,
+        messages: data.messages.filter((message) => message.sessionId === session.id),
+        feedbacks: data.feedbacks.filter((feedback) => feedback.sessionId === session.id)
+      };
+    });
   }
 
   async addMessage(
@@ -191,25 +214,25 @@ export class JsonAppStore {
     role: StoredMessage["role"],
     content: string
   ): Promise<StoredMessage> {
-    const data = await this.read();
-    const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
-    if (!session) {
-      throw new Error("customer session not found");
-    }
+    return this.mutate((data) => {
+      const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
+      if (!session) {
+        throw new Error("customer session not found");
+      }
 
-    const now = new Date().toISOString();
-    const message: StoredMessage = {
-      id: randomUUID(),
-      sessionId,
-      role,
-      content,
-      createdAt: now
-    };
-    data.messages.push(message);
-    session.lastMessageAt = now;
-    session.updatedAt = now;
-    await this.write(data);
-    return message;
+      const now = new Date().toISOString();
+      const message: StoredMessage = {
+        id: randomUUID(),
+        sessionId,
+        role,
+        content,
+        createdAt: now
+      };
+      data.messages.push(message);
+      session.lastMessageAt = now;
+      session.updatedAt = now;
+      return message;
+    });
   }
 
   async saveAssistantResult(
@@ -219,26 +242,53 @@ export class JsonAppStore {
     assistantText: string,
     recommendationPool: RankedHouse[] = result.recommendations
   ): Promise<void> {
-    const data = await this.read();
-    const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
-    if (!session) {
-      throw new Error("customer session not found");
-    }
+    return this.mutate((data) => {
+      const session = data.sessions.find((item) => item.id === sessionId && item.ownerUserId === ownerUserId);
+      if (!session) {
+        throw new Error("customer session not found");
+      }
 
-    const now = new Date().toISOString();
-    session.latestResponse = result;
-    session.latestRecommendationPool = recommendationPool;
-    session.status = deriveStatus(result);
-    session.lastMessageAt = now;
-    session.updatedAt = now;
-    data.messages.push({
-      id: randomUUID(),
-      sessionId,
-      role: "assistant",
-      content: assistantText,
-      createdAt: now
+      const now = new Date().toISOString();
+      session.latestResponse = result;
+      session.latestRecommendationPool = recommendationPool;
+      session.status = deriveStatus(result);
+      session.lastMessageAt = now;
+      session.updatedAt = now;
+      data.messages.push({
+        id: randomUUID(),
+        sessionId,
+        role: "assistant",
+        content: assistantText,
+        createdAt: now
+      });
     });
-    await this.write(data);
+  }
+
+  async addHouseFeedback(input: {
+    ownerUserId: string;
+    sessionId: string;
+    houseId: string;
+    isSuitable: boolean;
+    reason?: string | null;
+  }): Promise<StoredHouseFeedback> {
+    return this.mutate((data) => {
+      const session = data.sessions.find((item) => item.id === input.sessionId && item.ownerUserId === input.ownerUserId);
+      if (!session) {
+        throw new Error("customer session not found");
+      }
+      const feedback: StoredHouseFeedback = {
+        id: randomUUID(),
+        ownerUserId: input.ownerUserId,
+        sessionId: input.sessionId,
+        houseId: input.houseId,
+        isSuitable: input.isSuitable,
+        reason: input.reason?.trim() || null,
+        createdAt: new Date().toISOString()
+      };
+      data.feedbacks.push(feedback);
+      session.customerProfile = updateCustomerProfile(session.customerProfile ?? createEmptyCustomerProfile(), feedback);
+      return feedback;
+    });
   }
 
   private async read(): Promise<StoreData> {
@@ -246,8 +296,12 @@ export class JsonAppStore {
       const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<StoreData>;
       return {
         users: (parsed.users ?? []) as AppUser[],
-        sessions: parsed.sessions ?? [],
-        messages: parsed.messages ?? []
+        sessions: (parsed.sessions ?? []).map((session) => ({
+          ...session,
+          customerProfile: session.customerProfile ?? createEmptyCustomerProfile()
+        })) as StoredCustomerSession[],
+        messages: parsed.messages ?? [],
+        feedbacks: parsed.feedbacks ?? []
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -259,7 +313,20 @@ export class JsonAppStore {
 
   private async write(data: StoreData): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`);
+    const tempPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`);
+    await rename(tempPath, this.filePath);
+  }
+
+  private async mutate<T>(callback: (data: StoreData) => T): Promise<T> {
+    const operation = this.writeQueue.then(async () => {
+      const data = await this.read();
+      const result = callback(data);
+      await this.write(data);
+      return result;
+    });
+    this.writeQueue = operation.catch(() => undefined);
+    return operation;
   }
 
   private assertUserExists(data: StoreData, ownerUserId: string): void {
@@ -295,6 +362,11 @@ function deriveStatus(result: ChatResponse): string {
   if (result.consultation) {
     if (result.answerMode === "price_range") return "已查询价格范围";
     if (result.answerMode === "area_inventory") return "已查询区域空房";
+    if (result.answerMode === "building_detail") return "已查询楼栋详情";
+    if (result.answerMode === "feature_inventory") return "已查询条件房源";
+    if (result.answerMode === "move_in_inventory") return "已查询入住条件";
+    if (result.answerMode === "payment_inventory") return "已查询付款条件";
+    if (result.answerMode === "commute_ranking") return "已查询通勤排序";
     if (result.answerMode === "metro_line_inventory") return "已查询地铁沿线";
     if (result.answerMode === "metro_station_inventory") return "已查询地铁站点";
     if (result.answerMode === "area_layout_availability") return "已查询空房";
@@ -305,4 +377,25 @@ function deriveStatus(result: ChatResponse): string {
     return `已推荐 ${recommendationTotal} 套`;
   }
   return "暂无合适房源";
+}
+
+function updateCustomerProfile(profile: CustomerProfile, feedback: StoredHouseFeedback): CustomerProfile {
+  const reason = feedback.reason;
+  const feedbackReasonCounts = { ...profile.feedbackReasonCounts };
+  if (reason) {
+    feedbackReasonCounts[reason] = (feedbackReasonCounts[reason] ?? 0) + 1;
+  }
+  if (feedback.isSuitable || !reason) {
+    return { ...profile, feedbackReasonCounts };
+  }
+
+  return {
+    ...profile,
+    feedbackReasonCounts,
+    budgetSensitive: profile.budgetSensitive || reason === "价格高" && feedbackReasonCounts[reason] >= 2,
+    distanceSensitive: profile.distanceSensitive || reason === "位置远" && feedbackReasonCounts[reason] >= 2,
+    layoutStrict: profile.layoutStrict || reason === "户型不符" && feedbackReasonCounts[reason] >= 2,
+    needsImages: profile.needsImages || reason === "没图" && feedbackReasonCounts[reason] >= 2,
+    decorationSensitive: profile.decorationSensitive || reason === "装修差" && feedbackReasonCounts[reason] >= 2
+  };
 }

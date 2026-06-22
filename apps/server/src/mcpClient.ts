@@ -1,4 +1,5 @@
 import type { House } from "@ai-house-assistant/shared";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 type FetchFn = typeof fetch;
 
@@ -6,6 +7,7 @@ export type McpClientOptions = {
   url: string;
   authToken: string;
   fetchFn?: FetchFn;
+  timeoutMs?: number;
 };
 
 type JsonRpcSuccess = {
@@ -38,13 +40,15 @@ type McpRowsPayload = {
 export class McpClient {
   private nextId = 1;
   private readonly fetchFn: FetchFn;
+  private readonly timeoutMs: number;
 
   constructor(private readonly options: McpClientOptions) {
     this.fetchFn = options.fetchFn ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? 12000;
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const response = await this.fetchFn(this.options.url, {
+    const response = await fetchWithTimeout(this.fetchFn, this.options.url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.options.authToken}`,
@@ -60,7 +64,7 @@ export class McpClient {
           arguments: args
         }
       })
-    });
+    }, this.timeoutMs);
 
     if (!response.ok) {
       throw new Error(`MCP request failed with HTTP ${response.status}`);

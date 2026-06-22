@@ -4,7 +4,7 @@ import express from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { LocationSchema, type RankedHouse } from "@ai-house-assistant/shared";
+import { LocationSchema, type RankedHouse, validateRequirementExtraction } from "@ai-house-assistant/shared";
 import { createAssistant } from "./assistant";
 import type { ChatResponse, RecommendationPagination } from "./assistant";
 import { JsonAppStore, toPublicUser } from "./appStore";
@@ -23,28 +23,29 @@ const config = loadConfig();
 const app = express();
 const eventLogger = new InMemoryEventLogger();
 const store = new JsonAppStore(config.appDataPath);
-await store.ensureAdminUser();
-const authService = new AuthService(store);
+await store.ensureAdminUser(config.adminInitialPassword);
+const authService = new AuthService(store, { tokenTtlMs: config.authTokenTtlMs });
 const mcpClient =
   config.mcpServerUrl && config.mcpAuthToken
-    ? new McpClient({ url: config.mcpServerUrl, authToken: config.mcpAuthToken })
+    ? new McpClient({ url: config.mcpServerUrl, authToken: config.mcpAuthToken, timeoutMs: config.mcpTimeoutMs })
     : new MockMcpClient();
 const llmProvider = config.bailianApiKey
   ? new BailianLlmProvider({
       apiKey: config.bailianApiKey,
       baseUrl: config.bailianBaseUrl,
-      model: config.bailianModel
+      model: config.bailianModel,
+      timeoutMs: config.bailianTimeoutMs
     })
   : new MockLlmProvider();
 const locationResolver = config.amapWebServiceKey
-  ? new AmapLocationResolver({ apiKey: config.amapWebServiceKey, city: config.amapCity })
+  ? new AmapLocationResolver({ apiKey: config.amapWebServiceKey, city: config.amapCity, timeoutMs: config.amapTimeoutMs })
   : undefined;
 const assistant = createAssistant({ mcpClient, eventLogger, llmProvider, locationResolver, enrichImages: false });
 const recommendationPageSize = 10;
 const maxRecommendationPageSize = 20;
 const pageImageEnrichmentConcurrency = 3;
 
-app.use(cors());
+app.use(cors({ origin: buildCorsOrigin(config.corsOrigin) }));
 app.use(express.json());
 
 app.get("/api/health", (_request, response) => {
@@ -70,6 +71,13 @@ app.post("/api/auth/login", async (request, response, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+app.post("/api/auth/logout", (request, response) => {
+  const authorization = request.header("authorization") ?? "";
+  const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (token) authService.logout(token);
+  response.status(204).send();
 });
 
 app.get("/api/me", async (request, response, next) => {
@@ -142,13 +150,18 @@ app.post("/api/ai-house-assistant/chat", async (request, response, next) => {
       return;
     }
 
-    await store.getCustomerSession(userId, sessionId);
+    const session = await store.getCustomerSession(userId, sessionId);
     await store.addMessage(userId, sessionId, "user", message);
     const clientResolvedLocation = LocationSchema.nullable()
       .optional()
       .catch(undefined)
       .parse(request.body?.clientResolvedLocation);
-    const fullResult = await assistant.chat({ sessionId, message, clientResolvedLocation });
+    const fullResult = await assistant.chat({
+      sessionId,
+      message,
+      clientResolvedLocation,
+      customerProfile: session.customerProfile
+    });
     const result = await withRecommendationPage(fullResult, 1, recommendationPageSize);
     await store.saveAssistantResult(userId, sessionId, result, buildAssistantMessage(result), fullResult.recommendations);
     response.json(result);
@@ -176,8 +189,57 @@ app.get("/api/customer-sessions/:sessionId/recommendations", async (request, res
   }
 });
 
-app.get("/api/ai-house-assistant/events", (_request, response) => {
-  response.json({ events: eventLogger.all() });
+app.post("/api/customer-sessions/:sessionId/requirement-correction", async (request, response, next) => {
+  try {
+    const userId = requireUserId(request, authService);
+    const session = await store.getCustomerSession(userId, request.params.sessionId);
+    const correctedRequirement = validateRequirementExtraction(request.body?.requirement);
+    const fullResult = await assistant.recommendFromRequirement(
+      request.params.sessionId,
+      correctedRequirement,
+      session.customerProfile
+    );
+    const result = await withRecommendationPage(fullResult, 1, recommendationPageSize);
+    await store.saveAssistantResult(userId, request.params.sessionId, result, buildAssistantMessage(result), fullResult.recommendations);
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/customer-sessions/:sessionId/feedback", async (request, response, next) => {
+  try {
+    const userId = requireUserId(request, authService);
+    const houseId = String(request.body?.houseId ?? "");
+    if (!houseId.trim()) {
+      response.status(400).json({ error: "houseId is required" });
+      return;
+    }
+    const feedback = await store.addHouseFeedback({
+      ownerUserId: userId,
+      sessionId: request.params.sessionId,
+      houseId,
+      isSuitable: Boolean(request.body?.isSuitable),
+      reason: typeof request.body?.reason === "string" ? request.body.reason : null
+    });
+    eventLogger.record("feedback_submitted", {
+      sessionId: request.params.sessionId,
+      payload: feedback
+    });
+    const session = await store.getCustomerSession(userId, request.params.sessionId);
+    response.status(201).json({ feedback, customerProfile: session.customerProfile });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/ai-house-assistant/events", async (request, response, next) => {
+  try {
+    await requireAdminUser(request, authService, store);
+    response.json({ events: eventLogger.all() });
+  } catch (error) {
+    next(error);
+  }
 });
 
 const webDistPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -198,6 +260,14 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 app.listen(config.port, () => {
   console.log(`AI house assistant API listening on http://localhost:${config.port}`);
 });
+
+function buildCorsOrigin(corsOrigin: string | null): boolean | string[] {
+  if (!corsOrigin) return process.env.NODE_ENV === "production" ? false : true;
+  return corsOrigin
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
 
 function buildAssistantMessage(result: ChatResponse): string {
   if (result.followUpQuestion) {

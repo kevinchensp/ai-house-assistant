@@ -49,9 +49,11 @@ jobs:
             APP_PARENT="/www/wwwroot/ai-house-assistant"
             APP_DIR="$APP_PARENT/ai-house-assistant"
             mkdir -p "$APP_DIR"
+            rm -f /tmp/ai-house-assistant.env.backup
             if [ -f "$APP_DIR/.env" ]; then
               cp "$APP_DIR/.env" /tmp/ai-house-assistant.env.backup
             fi
+            find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name ".env" -exec rm -rf {} +
             tar -xzf /tmp/ai-house-assistant.tar.gz -C "$APP_DIR"
             if [ -f /tmp/ai-house-assistant.env.backup ]; then
               mv /tmp/ai-house-assistant.env.backup "$APP_DIR/.env"

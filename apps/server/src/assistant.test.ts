@@ -1533,6 +1533,171 @@ describe("assistant", () => {
     });
     expect(calls[0]).not.toHaveProperty("livingRoom");
   });
+
+  it("re-runs recommendations from a corrected requirement", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          calls.push(args);
+          return [buildTestHouse("corrected-1", 1000, "永泰公寓", 113.306, 23.221)];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.recommendFromRequirement("s-corrected", {
+      location: {
+        raw: "永泰",
+        normalized: "永泰",
+        city: "广州",
+        district: "白云区",
+        placeType: "metro_station",
+        center: { lng: 113.3069, lat: 23.2202 },
+        confidence: 0.9
+      },
+      budget: { target: 1000, min: 800, max: 1200, confidence: 0.9 },
+      layout: { bedroom: 1, livingRoom: null, toilet: null, confidence: 0.9 },
+      preferences: { rentType: null, direction: null, minArea: null, moveInDate: null, features: ["可养宠物"] },
+      missingRequiredSlots: [],
+      shouldAskFollowUp: false,
+      followUpQuestion: null
+    });
+
+    expect(response.answerMode).toBe("recommend_houses");
+    expect(calls[0]).toMatchObject({ keyword: "永泰", bedroom: 1, minRent: 800, maxRent: 1200 });
+    expect(response.recommendations).toHaveLength(1);
+  });
+
+  it("adapts recommendation reply to the customer profile learned from feedback", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async () => [
+          buildTestHouse("profile-near", 1000, "永泰近房", 113.306, 23.221),
+          buildTestHouse("profile-far", 900, "永泰远房", 113.36, 23.26)
+        ]
+      },
+      locationResolver: {
+        resolve: async () => ({
+          raw: "永泰",
+          normalized: "永泰",
+          city: "广州",
+          district: "白云区",
+          placeType: "metro_station",
+          center: { lng: 113.3069, lat: 23.2202 },
+          confidence: 0.9
+        })
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-profile",
+      message: "永泰一房，预算1000左右",
+      customerProfile: {
+        budgetSensitive: false,
+        distanceSensitive: true,
+        layoutStrict: false,
+        needsImages: false,
+        decorationSensitive: false,
+        feedbackReasonCounts: { "位置远": 2 }
+      }
+    });
+
+    expect(response.salesReply.text).toContain("客户之前比较在意位置距离");
+  });
+
+  it("answers feature inventory consultation for pet-friendly houses", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          expect(args.keyword).toBe("永泰 可养宠物");
+          return [buildTestHouse("pet-1", 1100, "永泰宠物友好公寓", 113.306, 23.221)];
+        }
+      },
+      locationResolver: {
+        resolve: async () => ({
+          raw: "永泰",
+          normalized: "永泰",
+          city: "广州",
+          district: "白云区",
+          placeType: "metro_station",
+          center: { lng: 113.3069, lat: 23.2202 },
+          confidence: 0.9
+        })
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-feature",
+      message: "永泰有没有可以养宠物的房子"
+    });
+
+    expect(response.answerMode).toBe("feature_inventory");
+    expect(response.consultation?.title).toContain("可养宠物");
+    expect(response.requirement.preferences.features).toContain("可养宠物");
+    expect(response.salesReply.text).toContain("发给客户前再点详情确认");
+  });
+
+  it("answers building detail consultation", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          expect(args.keyword).toBe("瑞东石井二期A栋");
+          return [buildTestHouse("building-1", 580, "瑞东石井二期A栋", 113.255, 23.203)];
+        }
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-building-detail",
+      message: "瑞东石井二期A栋详情"
+    });
+
+    expect(response.answerMode).toBe("building_detail");
+    expect(response.consultation?.metrics).toEqual(expect.arrayContaining([{ label: "空房数", value: "1套" }]));
+    expect(response.salesReply.text).toContain("户型覆盖");
+  });
+
+  it("answers commute ranking consultation", async () => {
+    const assistant = createAssistant({
+      mcpClient: {
+        searchHouses: async (args) => {
+          expect(args.keyword).toBe("永泰");
+          return [
+            buildTestHouse("commute-far", 1000, "永泰远房", 113.2, 23.2),
+            buildTestHouse("commute-near", 1200, "永泰近房", 113.307, 23.221)
+          ];
+        }
+      },
+      locationResolver: {
+        resolve: async (query) =>
+          query === "珠江新城"
+            ? {
+                raw: "珠江新城",
+                normalized: "珠江新城",
+                city: "广州",
+                district: "天河区",
+                placeType: "business_area",
+                center: { lng: 113.3205, lat: 23.119 },
+                confidence: 0.9
+              }
+            : null
+      },
+      eventLogger: new InMemoryEventLogger(() => "2026-06-12T00:00:00.000Z")
+    });
+
+    const response = await assistant.chat({
+      sessionId: "s-commute",
+      message: "永泰到珠江新城上班方便吗"
+    });
+
+    expect(response.answerMode).toBe("commute_ranking");
+    expect(response.consultation?.title).toContain("通勤参考");
+    expect(response.recommendations[0]?.houseId).toBe("commute-near");
+  });
 });
 
 function buildTestHouse(houseId: string, rentPrice: number, buildingName: string, lng: number, lat: number) {

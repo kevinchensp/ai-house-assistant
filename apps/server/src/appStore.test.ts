@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { RankedHouse } from "@ai-house-assistant/shared";
@@ -53,15 +53,32 @@ describe("JsonAppStore", () => {
     await expect(store.renameCustomerSession(alice.id, session.id, " ")).rejects.toThrow("customer name is required");
   });
 
-  it("creates the default admin account once", async () => {
-    const firstAdmin = await store.ensureAdminUser();
-    const secondAdmin = await store.ensureAdminUser();
+  it("requires an explicit initial admin password before creating the default admin account", async () => {
+    await expect(store.ensureAdminUser()).rejects.toThrow("ADMIN_INITIAL_PASSWORD");
+  });
+
+  it("creates the default admin account once from an explicit initial password", async () => {
+    const firstAdmin = await store.ensureAdminUser("secure-admin-password");
+    const secondAdmin = await store.ensureAdminUser("ignored-after-first-create");
     const users = await store.listUsers();
 
     expect(firstAdmin.id).toBe(secondAdmin.id);
     expect(firstAdmin.phone).toBe("admin");
     expect(firstAdmin.role).toBe("admin");
     expect(users).toHaveLength(1);
+  });
+
+  it("serializes concurrent writes so sessions are not lost", async () => {
+    const agent = await store.createUser({ name: "小陈", phone: "13800000001", password: "123456" });
+
+    await Promise.all(
+      Array.from({ length: 12 }, (_, index) => store.createCustomerSession(agent.id, `客户 ${index + 1}`))
+    );
+
+    const sessions = await store.listCustomerSessions(agent.id);
+    expect(sessions).toHaveLength(12);
+    expect(new Set(sessions.map((session) => session.customerName)).size).toBe(12);
+    await expect(readFile(join(dir, "store.json"), "utf8")).resolves.toContain("客户 12");
   });
 
   it("stores a paged latest response separately from the full recommendation pool", async () => {
@@ -75,6 +92,65 @@ describe("JsonAppStore", () => {
     const saved = await store.getCustomerSession(agent.id, session.id);
     expect(saved.latestResponse?.recommendations.map((house) => house.houseId)).toEqual(["h1", "h2"]);
     expect(saved.latestRecommendationPool?.map((house) => house.houseId)).toEqual(["h1", "h2", "h3"]);
+  });
+
+  it("records house feedback with a reason", async () => {
+    const agent = await store.createUser({ name: "小陈", phone: "13800000001", password: "123456" });
+    const session = await store.createCustomerSession(agent.id, "客户 1");
+
+    const feedback = await store.addHouseFeedback({
+      ownerUserId: agent.id,
+      sessionId: session.id,
+      houseId: "h1",
+      isSuitable: false,
+      reason: "位置远"
+    });
+
+    expect(feedback).toMatchObject({
+      ownerUserId: agent.id,
+      sessionId: session.id,
+      houseId: "h1",
+      isSuitable: false,
+      reason: "位置远"
+    });
+    await expect(readFile(join(dir, "store.json"), "utf8")).resolves.toContain("位置远");
+  });
+
+  it("updates the customer profile from repeated feedback reasons", async () => {
+    const agent = await store.createUser({ name: "小陈", phone: "13800000001", password: "123456" });
+    const session = await store.createCustomerSession(agent.id, "客户 1");
+
+    await store.addHouseFeedback({
+      ownerUserId: agent.id,
+      sessionId: session.id,
+      houseId: "h1",
+      isSuitable: false,
+      reason: "位置远"
+    });
+    await store.addHouseFeedback({
+      ownerUserId: agent.id,
+      sessionId: session.id,
+      houseId: "h2",
+      isSuitable: false,
+      reason: "位置远"
+    });
+    await store.addHouseFeedback({
+      ownerUserId: agent.id,
+      sessionId: session.id,
+      houseId: "h3",
+      isSuitable: false,
+      reason: "价格高"
+    });
+
+    const saved = await store.getCustomerSession(agent.id, session.id);
+    expect(saved.customerProfile).toMatchObject({
+      distanceSensitive: true,
+      budgetSensitive: false,
+      feedbackReasonCounts: {
+        "位置远": 2,
+        "价格高": 1
+      }
+    });
   });
 });
 

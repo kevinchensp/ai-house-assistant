@@ -728,6 +728,72 @@ textarea:focus {
   margin-bottom: 0;
 }
 
+.inline-action {
+  background: #edf3e8;
+  border: 1px solid #cfd8c8;
+  border-radius: 999px;
+  color: #174b3f;
+  cursor: pointer;
+  font-size: 12px;
+  margin-left: auto;
+  padding: 5px 10px;
+}
+
+.summary-band small {
+  color: #6f7a69;
+  display: block;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.requirement-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.requirement-editor label {
+  color: #60705e;
+  display: grid;
+  font-size: 12px;
+  gap: 5px;
+}
+
+.requirement-editor input {
+  background: #fff;
+  border: 1px solid #cfd8c8;
+  border-radius: 8px;
+  color: #14201b;
+  font-size: 14px;
+  padding: 9px 10px;
+}
+
+.editor-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.editor-actions,
+.feedback-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.editor-actions button {
+  background: #edf3e8;
+  border: 1px solid #cfd8c8;
+  border-radius: 8px;
+  color: #174b3f;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+.editor-actions button:last-child {
+  background: #174b3f;
+  color: #fff;
+}
+
 .view-switch {
   background: #edf3e8;
   border: 1px solid #d7dfcf;
@@ -1354,6 +1420,38 @@ textarea:focus {
   line-height: 1.55;
 }
 
+.house-card.accepted {
+  border-color: #86aa7d;
+  background: #f7fbf4;
+}
+
+.house-card.rejected {
+  opacity: 0.72;
+}
+
+.feedback-house-section {
+  border: 1px dashed #c8d8bf;
+  border-radius: 12px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.feedback-section-title {
+  align-items: center;
+  color: #173f35;
+  display: flex;
+  justify-content: space-between;
+}
+
+.feedback-section-title span {
+  background: #edf3e8;
+  border-radius: 999px;
+  color: #687564;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
 .house-address {
   color: #63705f;
   margin-bottom: 6px;
@@ -1362,6 +1460,22 @@ textarea:focus {
 .warning {
   color: #9f4c2e;
   margin-top: 6px;
+}
+
+.feedback-status {
+  border-radius: 8px;
+  font-weight: 700;
+  padding: 7px 9px;
+}
+
+.feedback-status.accepted {
+  background: #edf7e8;
+  color: #246438;
+}
+
+.feedback-status.rejected {
+  background: #fff3ed;
+  color: #9f4c2e;
 }
 
 .feedback-row {

@@ -15,6 +15,11 @@ export type AssistantIntent =
   | { type: "area_inventory"; locationKeyword: string; confidence: number }
   | { type: "metro_line_inventory"; lineName: string; confidence: number }
   | { type: "metro_station_inventory"; stationName: string; lineName: string | null; confidence: number }
+  | { type: "building_detail"; projectName: string; confidence: number }
+  | { type: "feature_inventory"; locationKeyword: string; feature: string; confidence: number }
+  | { type: "move_in_inventory"; locationKeyword: string; moveInDate: string | null; confidence: number }
+  | { type: "payment_inventory"; locationKeyword: string; payment: string; confidence: number }
+  | { type: "commute_ranking"; locationKeyword: string; destinationKeyword: string; confidence: number }
   | {
       type: "area_layout_availability";
       locationKeyword: string;

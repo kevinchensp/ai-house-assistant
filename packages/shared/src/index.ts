@@ -106,6 +106,28 @@ export const SalesReplySchema = z.object({
 
 export type SalesReply = z.infer<typeof SalesReplySchema>;
 
+export const CustomerProfileSchema = z.object({
+  budgetSensitive: z.boolean(),
+  distanceSensitive: z.boolean(),
+  layoutStrict: z.boolean(),
+  needsImages: z.boolean(),
+  decorationSensitive: z.boolean(),
+  feedbackReasonCounts: z.record(z.number().int().min(0))
+});
+
+export type CustomerProfile = z.infer<typeof CustomerProfileSchema>;
+
+export function createEmptyCustomerProfile(): CustomerProfile {
+  return {
+    budgetSensitive: false,
+    distanceSensitive: false,
+    layoutStrict: false,
+    needsImages: false,
+    decorationSensitive: false,
+    feedbackReasonCounts: {}
+  };
+}
+
 type LocationDictionaryEntry = {
   normalized: string;
   city: string;

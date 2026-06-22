@@ -14,7 +14,7 @@
 - 模型接入：支持阿里云百炼 OpenAI-compatible 接口；未配置 API Key 时自动回退 `MockLlmProvider`
 - 多轮上下文：同一 session 内支持“周边可以”“预算可以上浮”等短回复继承上一轮需求
 - 多客服使用：支持手机号+密码登录，每个客服只看到自己的客户会话
-- 账号开通：默认管理员账号 `admin`，管理员可在独立页面开通客服账号
+- 账号开通：管理员账号 `admin` 首次由 `ADMIN_INITIAL_PASSWORD` 初始化，管理员可在独立页面开通客服账号
 - 客户队列：支持同一客服同时跟进多个客户，会话、聊天记录、推荐结果持久化在服务端
 - P0 规则：预算解析、位置字典、位置置信度、距离计算、房源排序、schema 校验
 - 事件日志：需求发送、需求抽取、位置解析、MCP 调用、推荐展示、话术生成
@@ -58,11 +58,18 @@ cp .env.example .env
 ```text
 MCP_SERVER_URL=http://8.134.48.145:3100/mcp
 MCP_AUTH_TOKEN=replace-with-server-token
+ADMIN_INITIAL_PASSWORD=replace-with-initial-admin-password
 BAILIAN_API_KEY=replace-with-bailian-api-key
 BAILIAN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 BAILIAN_MODEL=qwen-plus
 PORT=3101
 VITE_API_BASE_URL=http://localhost:3101
+APP_DATA_PATH=.data/ai-house-assistant.json
+CORS_ORIGIN=http://localhost:5173
+AUTH_TOKEN_TTL_MS=28800000
+MCP_TIMEOUT_MS=12000
+BAILIAN_TIMEOUT_MS=15000
+AMAP_TIMEOUT_MS=5000
 VITE_AMAP_WEB_MAP_KEY=replace-with-amap-web-js-key
 VITE_AMAP_SECURITY_JS_CODE=replace-with-amap-security-js-code
 AMAP_WEB_SERVICE_KEY=replace-with-amap-web-service-key
@@ -80,15 +87,22 @@ AMAP_CITY=广州
 
 前端顶部状态会读取 `GET /api/health`，显示当前是否为远端 MCP 和真实模型。
 
+安全与稳定性配置说明：
+
+- `ADMIN_INITIAL_PASSWORD` 只在首次创建 `admin` 管理员时使用。已有管理员数据后可移除；新环境未配置时服务会拒绝自动创建弱口令管理员。
+- `CORS_ORIGIN` 用逗号分隔允许访问 API 的前端源。本地开发通常是 `http://localhost:5173`；同源 Docker 部署可留空。
+- `AUTH_TOKEN_TTL_MS` 控制登录 token 有效期，默认 8 小时。
+- `MCP_TIMEOUT_MS`、`BAILIAN_TIMEOUT_MS`、`AMAP_TIMEOUT_MS` 分别控制 MCP、模型、高德请求超时，避免外部服务挂起拖死接口。
+
 ## 多客服 MVP 登录
 
 当前版本采用 MVP 级登录：客服使用手机号和密码登录，后端会把客户会话按客服账号隔离。
 
-默认管理员账号：
+首次启动前需要在 `.env` 配置管理员初始密码：
 
 ```text
 账号：admin
-密码：admin
+密码：取自 ADMIN_INITIAL_PASSWORD
 ```
 
 管理员登录后进入“账号开通”页面，可创建客服账号。MVP 暂不做用户组和组织架构，只保证多个客服同时使用时数据按个人隔离。
@@ -109,12 +123,22 @@ npm run typecheck
 npm run build
 ```
 
-API smoke test：
+API smoke test 需要先登录获取 token：
 
 ```bash
-curl -sS -X POST http://localhost:3101/api/ai-house-assistant/chat \
+TOKEN=$(curl -sS -X POST http://localhost:3101/api/auth/login \
   -H 'Content-Type: application/json' \
-  --data '{"sessionId":"demo","message":"帮我找白云东平一室一厅，预算1000左右"}'
+  --data '{"phone":"admin","password":"你的管理员密码"}' | node -pe 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).token')
+
+SESSION_ID=$(curl -sS -X POST http://localhost:3101/api/customer-sessions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"customerName":"Smoke Test"}' | node -pe 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).session.id')
+
+curl -sS -X POST http://localhost:3101/api/ai-house-assistant/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data "{\"sessionId\":\"$SESSION_ID\",\"message\":\"帮我找白云东平一室一厅，预算1000左右\"}"
 ```
 
 ## 文档

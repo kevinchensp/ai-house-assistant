@@ -21,7 +21,12 @@ type ChatResponse = {
   answerMode?:
     | "recommend_houses"
     | "project_vacancy"
+    | "building_detail"
     | "area_inventory"
+    | "feature_inventory"
+    | "move_in_inventory"
+    | "payment_inventory"
+    | "commute_ranking"
     | "metro_line_inventory"
     | "metro_station_inventory"
     | "price_range"
@@ -37,8 +42,8 @@ type ChatResponse = {
       center: { lng: number; lat: number } | null;
       placeType: string;
     } | null;
-    budget: { target: number; min: number; max: number } | null;
-    layout: { bedroom: number | null; livingRoom: number | null };
+    budget: { target: number; min: number; max: number; confidence?: number } | null;
+    layout: { bedroom: number | null; livingRoom: number | null; toilet?: number | null; confidence?: number };
     preferences: {
       rentType: string | null;
       direction: string | null;
@@ -47,6 +52,8 @@ type ChatResponse = {
       features: string[];
     };
     missingRequiredSlots: string[];
+    shouldAskFollowUp: boolean;
+    followUpQuestion: string | null;
   };
   followUpQuestion: string | null;
   searchTrace: Array<{ name: string; resultCount: number }>;
@@ -90,6 +97,15 @@ type RecommendationPagination = {
   hasPrev: boolean;
 };
 
+type CustomerProfile = {
+  budgetSensitive: boolean;
+  distanceSensitive: boolean;
+  layoutStrict: boolean;
+  needsImages: boolean;
+  decorationSensitive: boolean;
+  feedbackReasonCounts: Record<string, number>;
+};
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:3101" : "");
 const amapWebMapKey = import.meta.env.VITE_AMAP_WEB_MAP_KEY ?? "";
 const amapSecurityJsCode = import.meta.env.VITE_AMAP_SECURITY_JS_CODE ?? "";
@@ -120,6 +136,8 @@ type CustomerSession = {
   messages: ChatMessage[];
   response: ChatResponse | null;
   summaryRequirement: ChatResponse["requirement"] | null;
+  customerProfile: CustomerProfile | null;
+  feedbackByHouseId: Record<string, { isSuitable: boolean; reason: string | null }>;
   updatedAt: number;
 };
 
@@ -139,12 +157,18 @@ type StoredCustomerSession = {
   customerName: string;
   status: string;
   latestResponse: ChatResponse | null;
+  customerProfile?: CustomerProfile | null;
   updatedAt: string;
   messages: Array<{
     id: string;
     role: "assistant" | "user";
     content: string;
     createdAt: string;
+  }>;
+  feedbacks?: Array<{
+    houseId: string;
+    isSuitable: boolean;
+    reason: string | null;
   }>;
 };
 
@@ -184,6 +208,13 @@ function mapStoredSession(session: StoredCustomerSession): CustomerSession {
       : [welcomeMessage],
     response: session.latestResponse,
     summaryRequirement: session.latestResponse?.requirement ?? null,
+    customerProfile: session.customerProfile ?? null,
+    feedbackByHouseId: Object.fromEntries(
+      (session.feedbacks ?? []).map((feedback) => [
+        feedback.houseId,
+        { isSuitable: feedback.isSuitable, reason: feedback.reason }
+      ])
+    ),
     updatedAt: Date.parse(session.updatedAt)
   };
 }
@@ -220,6 +251,8 @@ function App() {
   const [workspaceFocus, setWorkspaceFocus] = useState<"chat" | "insights">("chat");
   const [editingCustomerId, setEditingCustomerId] = useState<string | null>(null);
   const [editingCustomerName, setEditingCustomerName] = useState("");
+  const [isEditingRequirement, setIsEditingRequirement] = useState(false);
+  const [requirementDraft, setRequirementDraft] = useState<ChatResponse["requirement"] | null>(null);
   const [loadingRecommendationPage, setLoadingRecommendationPage] = useState(false);
   const activeCustomer = customers.find((customer) => customer.id === activeCustomerId) ?? customers[0];
   const isLoading = loadingCustomerId === activeCustomer?.id;
@@ -322,6 +355,14 @@ function App() {
         headers: { Authorization: `Bearer ${authToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: activeCustomer.id, message: trimmedMessage, clientResolvedLocation })
       });
+      if (!result.ok) {
+        if (result.status === 401) {
+          localStorage.removeItem("ai-house-auth-token");
+          setAuthToken(null);
+          setUser(null);
+        }
+        throw new Error(`chat request failed with ${result.status}`);
+      }
       const nextResponse = (await result.json()) as ChatResponse;
       const assistantMessageId = createClientId();
       if (nextResponse.recommendations.length > 0 || nextResponse.consultation) {
@@ -330,6 +371,23 @@ function App() {
       setCustomers((current) =>
         current.map((customer) =>
           customer.id === activeCustomer.id ? applyAssistantResponse(customer, nextResponse, assistantMessageId) : customer
+        )
+      );
+    } catch {
+      const assistantMessage: ChatMessage = {
+        id: createClientId(),
+        role: "assistant",
+        text: "刚刚请求失败了，可能是服务或网络暂时不可用。请稍后重试，或联系管理员查看服务状态。"
+      };
+      setCustomers((current) =>
+        current.map((customer) =>
+          customer.id === activeCustomer.id
+            ? {
+                ...customer,
+                messages: [...customer.messages, assistantMessage],
+                updatedAt: Date.now()
+              }
+            : customer
         )
       );
     } finally {
@@ -368,6 +426,56 @@ function App() {
       );
     } finally {
       setLoadingRecommendationPage(false);
+    }
+  }
+
+  async function submitRequirementCorrection() {
+    if (!authToken || !activeCustomer || !requirementDraft) return;
+    setLoadingCustomerId(activeCustomer.id);
+    try {
+      const payload = (await apiFetch(authToken, `/api/customer-sessions/${activeCustomer.id}/requirement-correction`, {
+        method: "POST",
+        body: JSON.stringify({ requirement: normalizeRequirementDraft(requirementDraft) })
+      })) as ChatResponse;
+      const assistantMessageId = createClientId();
+      setCustomers((current) =>
+        current.map((customer) =>
+          customer.id === activeCustomer.id ? applyAssistantResponse(customer, payload, assistantMessageId) : customer
+        )
+      );
+      setWorkspaceFocus("insights");
+      setIsEditingRequirement(false);
+      setRequirementDraft(null);
+    } finally {
+      setLoadingCustomerId(null);
+    }
+  }
+
+  async function submitHouseFeedback(houseId: string, isSuitable: boolean, reason: string | null = null) {
+    if (!authToken || !activeCustomer) return;
+    setCustomers((current) =>
+      current.map((customer) =>
+        customer.id === activeCustomer.id
+          ? {
+              ...customer,
+              feedbackByHouseId: {
+                ...customer.feedbackByHouseId,
+                [houseId]: { isSuitable, reason }
+              }
+            }
+          : customer
+      )
+    );
+    const payload = (await apiFetch(authToken, `/api/customer-sessions/${activeCustomer.id}/feedback`, {
+      method: "POST",
+      body: JSON.stringify({ houseId, isSuitable, reason })
+    })) as { customerProfile?: CustomerProfile };
+    if (payload.customerProfile) {
+      setCustomers((current) =>
+        current.map((customer) =>
+          customer.id === activeCustomer.id ? { ...customer, customerProfile: payload.customerProfile ?? null } : customer
+        )
+      );
     }
   }
 
@@ -454,6 +562,13 @@ function App() {
   }
 
   function logout() {
+    const token = authToken;
+    if (token) {
+      void fetch(`${apiBaseUrl}/api/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      }).catch(() => undefined);
+    }
     localStorage.removeItem("ai-house-auth-token");
     setAuthToken(null);
     setUser(null);
@@ -664,12 +779,36 @@ function App() {
             <div className="section-title">
               <MapPin size={18} />
               <h2>需求摘要</h2>
+              {summaryRequirement ? (
+                <button
+                  className="inline-action"
+                  onClick={() => {
+                    setRequirementDraft(summaryRequirement);
+                    setIsEditingRequirement(true);
+                  }}
+                  type="button"
+                >
+                  修正
+                </button>
+              ) : null}
             </div>
-            {summaryRequirement ? (
+            {summaryRequirement && isEditingRequirement && requirementDraft ? (
+              <RequirementEditor
+                requirement={requirementDraft}
+                onChange={setRequirementDraft}
+                onCancel={() => {
+                  setIsEditingRequirement(false);
+                  setRequirementDraft(null);
+                }}
+                onSubmit={() => void submitRequirementCorrection()}
+                isSubmitting={isLoading}
+              />
+            ) : summaryRequirement ? (
               <div className="summary-band">
                 <div>
                   <span>位置</span>
                   <strong>{summaryRequirement.location?.normalized ?? "待确认"}</strong>
+                  <small>{formatConfidence(summaryRequirement.location?.confidence)}</small>
                 </div>
                 <div>
                   <span>预算</span>
@@ -682,6 +821,7 @@ function App() {
                 <div>
                   <span>户型</span>
                   <strong>{formatRequirementLayout(summaryRequirement.layout)}</strong>
+                  <small>{formatConfidence(summaryRequirement.layout.confidence)}</small>
                 </div>
                 <div className="summary-wide">
                   <span>偏好</span>
@@ -695,6 +835,20 @@ function App() {
                     <strong>暂无额外偏好</strong>
                   )}
                 </div>
+                {activeCustomer?.customerProfile ? (
+                  <div className="summary-wide">
+                    <span>客户画像</span>
+                    <div className="preference-chips">
+                      {buildCustomerProfileChips(activeCustomer.customerProfile).length ? (
+                        buildCustomerProfileChips(activeCustomer.customerProfile).map((chip) => (
+                          <strong key={chip}>{chip}</strong>
+                        ))
+                      ) : (
+                        <strong>暂无明显偏好</strong>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="muted">发送客户需求后自动生成摘要。</p>
@@ -704,10 +858,12 @@ function App() {
           <section className="sidebar-section">
             <RecommendationResults
               response={response}
+              feedbackByHouseId={activeCustomer?.feedbackByHouseId ?? {}}
               view={recommendationView}
               onViewChange={setRecommendationView}
               onPageChange={loadRecommendationPage}
               isPageLoading={loadingRecommendationPage}
+              onFeedback={submitHouseFeedback}
             />
           </section>
         </aside>
@@ -728,16 +884,20 @@ function BrandTitle({ compact, layout = "inline" }: { compact: boolean; layout?:
 
 function RecommendationResults({
   response,
+  feedbackByHouseId,
   view,
   onViewChange,
   onPageChange,
-  isPageLoading
+  isPageLoading,
+  onFeedback
 }: {
   response: ChatResponse | null;
+  feedbackByHouseId: CustomerSession["feedbackByHouseId"];
   view: "list" | "map";
   onViewChange: (view: "list" | "map") => void;
   onPageChange: (page: number) => void;
   isPageLoading: boolean;
+  onFeedback: (houseId: string, isSuitable: boolean, reason?: string | null) => Promise<void>;
 }) {
   const hasRecommendations = Boolean(response?.recommendations.length);
   const hasConsultation = Boolean(response?.consultation);
@@ -770,7 +930,13 @@ function RecommendationResults({
       {response && view === "map" && canShowMap ? (
         <RecommendationMap response={response} onPageChange={onPageChange} isPageLoading={isPageLoading} />
       ) : hasRecommendations && response ? (
-        <HouseList response={response} onPageChange={onPageChange} isPageLoading={isPageLoading} />
+        <HouseList
+          response={response}
+          feedbackByHouseId={feedbackByHouseId}
+          onPageChange={onPageChange}
+          isPageLoading={isPageLoading}
+          onFeedback={onFeedback}
+        />
       ) : hasConsultation ? null : (
         <div className="empty-state">查询结果会在这里出现。</div>
       )}
@@ -799,16 +965,133 @@ function ConsultationCard({ consultation }: { consultation: NonNullable<ChatResp
   );
 }
 
+function RequirementEditor({
+  requirement,
+  onChange,
+  onCancel,
+  onSubmit,
+  isSubmitting
+}: {
+  requirement: ChatResponse["requirement"];
+  onChange: (requirement: ChatResponse["requirement"]) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+  isSubmitting: boolean;
+}) {
+  const locationText = requirement.location?.normalized ?? "";
+  const featureText = requirement.preferences.features.join("、");
+
+  return (
+    <div className="requirement-editor">
+      <label>
+        位置
+        <input
+          value={locationText}
+          onChange={(event) => onChange(updateRequirementLocation(requirement, event.target.value))}
+          placeholder="例如：永泰、东平、嘉禾望岗"
+        />
+      </label>
+      <div className="editor-grid">
+        <label>
+          预算下限
+          <input
+            value={requirement.budget?.min ?? ""}
+            onChange={(event) => onChange(updateRequirementBudget(requirement, "min", event.target.value))}
+            inputMode="numeric"
+          />
+        </label>
+        <label>
+          预算上限
+          <input
+            value={requirement.budget?.max ?? ""}
+            onChange={(event) => onChange(updateRequirementBudget(requirement, "max", event.target.value))}
+            inputMode="numeric"
+          />
+        </label>
+        <label>
+          房间数
+          <input
+            value={requirement.layout.bedroom ?? ""}
+            onChange={(event) => onChange(updateRequirementLayout(requirement, "bedroom", event.target.value))}
+            inputMode="numeric"
+          />
+        </label>
+        <label>
+          客厅数
+          <input
+            value={requirement.layout.livingRoom ?? ""}
+            onChange={(event) => onChange(updateRequirementLayout(requirement, "livingRoom", event.target.value))}
+            inputMode="numeric"
+          />
+        </label>
+      </div>
+      <label>
+        偏好
+        <input
+          value={featureText}
+          onChange={(event) => onChange(updateRequirementFeatures(requirement, event.target.value))}
+          placeholder="例如：可养宠物、带阳台、近地铁"
+        />
+      </label>
+      <div className="editor-actions">
+        <button onClick={onCancel} type="button">取消</button>
+        <button onClick={onSubmit} disabled={isSubmitting} type="button">按修正重查</button>
+      </div>
+    </div>
+  );
+}
+
+function FeedbackReasonButton({
+  houseId,
+  onFeedback
+}: {
+  houseId: string;
+  onFeedback: (houseId: string, isSuitable: boolean, reason?: string | null) => Promise<void>;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const reasons = ["价格高", "位置远", "户型不符", "没图", "装修差", "客户不喜欢"];
+  if (!isOpen) {
+    return (
+      <button onClick={() => setIsOpen(true)} type="button">
+        <ThumbsDown size={16} /> 不合适
+      </button>
+    );
+  }
+  return (
+    <span className="feedback-reasons">
+      {reasons.map((reason) => (
+        <button
+          key={reason}
+          onClick={() => {
+            setIsOpen(false);
+            void onFeedback(houseId, false, reason);
+          }}
+          type="button"
+        >
+          {reason}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 function HouseList({
   response,
+  feedbackByHouseId,
   onPageChange,
-  isPageLoading
+  isPageLoading,
+  onFeedback
 }: {
   response: ChatResponse;
+  feedbackByHouseId: CustomerSession["feedbackByHouseId"];
   onPageChange: (page: number) => void;
   isPageLoading: boolean;
+  onFeedback: (houseId: string, isSuitable: boolean, reason?: string | null) => Promise<void>;
 }) {
   const houses = response.recommendations;
+  const acceptedHouses = houses.filter((house) => feedbackByHouseId[house.houseId]?.isSuitable);
+  const rejectedHouses = houses.filter((house) => feedbackByHouseId[house.houseId]?.isSuitable === false);
+  const pendingHouses = houses.filter((house) => !feedbackByHouseId[house.houseId]);
   const pagination = getRecommendationPagination(response);
   const start = pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1;
   const end = Math.min(pagination.page * pagination.pageSize, pagination.total);
@@ -819,40 +1102,30 @@ function HouseList({
         <span>已按匹配度、距离和图片完整度排序</span>
         <strong>第 {pagination.page}/{pagination.totalPages} 页 · 共 {pagination.total} 套</strong>
       </div>
-      {houses.map((house) => (
-        <article className="house-card" key={house.houseId}>
-          <div className="house-cover-frame">
-            {house.coverImageUrl ? (
-              <img className="house-cover" src={house.coverImageUrl} alt={`${house.buildingName} ${house.houseNumber}`} />
-            ) : (
-              <div className="house-cover placeholder">暂无图片</div>
-            )}
-          </div>
-          <div className="house-card-body">
-            <div className="house-title">
-              <h3>
-                {house.buildingName} {house.houseNumber}
-              </h3>
-              <strong>{house.rentPrice}元</strong>
-            </div>
-            <div className="house-meta">
-              <span>{house.bedroom}室{house.livingRoom}厅{house.toilet}卫</span>
-              <span>{house.area}平</span>
-              <span>押金 {house.deposit}</span>
-            </div>
-            {house.address ? <p className="house-address">{house.address}</p> : null}
-            <p>{house.recommendationReason}</p>
-            {house.mismatchNote ? <p className="warning">{house.mismatchNote}</p> : null}
-            <div className="feedback-row">
-              <button><CheckCircle2 size={16} /> 合适</button>
-              <button><ThumbsDown size={16} /> 不合适</button>
-              <a className="room-detail-link" href={buildRoomDetailUrl(house.houseId)} target="_blank" rel="noreferrer">
-                查看详情
-              </a>
-            </div>
-          </div>
-        </article>
+      {acceptedHouses.length ? (
+        <FeedbackHouseSection
+          title="已认可，优先发给客户"
+          houses={acceptedHouses}
+          feedbackByHouseId={feedbackByHouseId}
+          onFeedback={onFeedback}
+        />
+      ) : null}
+      {pendingHouses.map((house) => (
+        <HouseCard
+          key={house.houseId}
+          house={house}
+          feedback={feedbackByHouseId[house.houseId]}
+          onFeedback={onFeedback}
+        />
       ))}
+      {rejectedHouses.length ? (
+        <FeedbackHouseSection
+          title="已排除，作为偏好学习依据"
+          houses={rejectedHouses}
+          feedbackByHouseId={feedbackByHouseId}
+          onFeedback={onFeedback}
+        />
+      ) : null}
       <ResultPagination
         pagination={pagination}
         start={start}
@@ -889,6 +1162,85 @@ function ResultPagination({
         下一页
       </button>
     </div>
+  );
+}
+
+function FeedbackHouseSection({
+  title,
+  houses,
+  feedbackByHouseId,
+  onFeedback
+}: {
+  title: string;
+  houses: RecommendedHouse[];
+  feedbackByHouseId: CustomerSession["feedbackByHouseId"];
+  onFeedback: (houseId: string, isSuitable: boolean, reason?: string | null) => Promise<void>;
+}) {
+  return (
+    <section className="feedback-house-section">
+      <div className="feedback-section-title">
+        <strong>{title}</strong>
+        <span>{houses.length} 套</span>
+      </div>
+      {houses.map((house) => (
+        <HouseCard
+          key={house.houseId}
+          house={house}
+          feedback={feedbackByHouseId[house.houseId]}
+          onFeedback={onFeedback}
+        />
+      ))}
+    </section>
+  );
+}
+
+function HouseCard({
+  house,
+  feedback,
+  onFeedback
+}: {
+  house: RecommendedHouse;
+  feedback?: { isSuitable: boolean; reason: string | null };
+  onFeedback: (houseId: string, isSuitable: boolean, reason?: string | null) => Promise<void>;
+}) {
+  return (
+    <article className={`house-card ${feedback ? (feedback.isSuitable ? "accepted" : "rejected") : ""}`}>
+      <div className="house-cover-frame">
+        {house.coverImageUrl ? (
+          <img className="house-cover" src={house.coverImageUrl} alt={`${house.buildingName} ${house.houseNumber}`} />
+        ) : (
+          <div className="house-cover placeholder">暂无图片</div>
+        )}
+      </div>
+      <div className="house-card-body">
+        <div className="house-title">
+          <h3>
+            {house.buildingName} {house.houseNumber}
+          </h3>
+          <strong>{house.rentPrice}元</strong>
+        </div>
+        <div className="house-meta">
+          <span>{house.bedroom}室{house.livingRoom}厅{house.toilet}卫</span>
+          <span>{house.area}平</span>
+          <span>押金 {house.deposit}</span>
+        </div>
+        {house.address ? <p className="house-address">{house.address}</p> : null}
+        <p>{house.recommendationReason}</p>
+        {house.mismatchNote ? <p className="warning">{house.mismatchNote}</p> : null}
+        {feedback ? (
+          <p className={`feedback-status ${feedback.isSuitable ? "accepted" : "rejected"}`}>
+            {feedback.isSuitable ? "已标记合适" : `已排除：${feedback.reason ?? "未填写原因"}`}
+          </p>
+        ) : null}
+        <div className="feedback-row">
+          <button onClick={() => void onFeedback(house.houseId, true)}><CheckCircle2 size={16} /> 合适</button>
+          <FeedbackReasonButton houseId={house.houseId} onFeedback={onFeedback} />
+          <a className="room-detail-link" href={buildRoomDetailUrl(house.houseId)} target="_blank" rel="noreferrer">
+            查看详情
+          </a>
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -1540,6 +1892,114 @@ function sanitizeDisplayRequirement(requirement: ChatResponse["requirement"]): C
   };
 }
 
+function normalizeRequirementDraft(requirement: ChatResponse["requirement"]): ChatResponse["requirement"] {
+  return {
+    ...requirement,
+    location: requirement.location
+      ? {
+          ...requirement.location,
+          confidence: requirement.location.confidence ?? 0.72
+        }
+      : null,
+    budget: requirement.budget
+      ? {
+          ...requirement.budget,
+          target: requirement.budget.target || Math.round((requirement.budget.min + requirement.budget.max) / 2),
+          confidence: requirement.budget.confidence ?? 0.82
+        }
+      : null,
+    layout: {
+      bedroom: requirement.layout.bedroom,
+      livingRoom: requirement.layout.livingRoom,
+      toilet: requirement.layout.toilet ?? null,
+      confidence: requirement.layout.confidence ?? 0.82
+    },
+    missingRequiredSlots: getDisplayMissingSlots(requirement),
+    shouldAskFollowUp: getDisplayMissingSlots(requirement).length > 0,
+    followUpQuestion: null
+  };
+}
+
+function updateRequirementLocation(
+  requirement: ChatResponse["requirement"],
+  value: string
+): ChatResponse["requirement"] {
+  const normalized = value.trim();
+  return {
+    ...requirement,
+    location: normalized
+      ? {
+          raw: normalized,
+          normalized,
+          city: requirement.location?.city ?? "广州",
+          district: requirement.location?.district ?? null,
+          placeType: requirement.location?.placeType ?? "poi",
+          center: requirement.location?.center ?? null,
+          confidence: requirement.location?.confidence ?? 0.72
+        }
+      : null
+  };
+}
+
+function updateRequirementBudget(
+  requirement: ChatResponse["requirement"],
+  key: "min" | "max",
+  value: string
+): ChatResponse["requirement"] {
+  const numberValue = Number(value);
+  const current = requirement.budget ?? { target: 0, min: 0, max: 0, confidence: 0.82 };
+  const nextValue = Number.isFinite(numberValue) && value.trim() ? numberValue : 0;
+  const budget = { ...current, [key]: nextValue };
+  return {
+    ...requirement,
+    budget: {
+      ...budget,
+      target: Math.round((budget.min + budget.max) / 2),
+      confidence: budget.confidence ?? 0.82
+    }
+  };
+}
+
+function updateRequirementLayout(
+  requirement: ChatResponse["requirement"],
+  key: "bedroom" | "livingRoom",
+  value: string
+): ChatResponse["requirement"] {
+  const numberValue = Number(value);
+  return {
+    ...requirement,
+    layout: {
+      ...requirement.layout,
+      [key]: Number.isFinite(numberValue) && value.trim() ? numberValue : null,
+      toilet: requirement.layout.toilet ?? null,
+      confidence: requirement.layout.confidence ?? 0.82
+    }
+  };
+}
+
+function updateRequirementFeatures(
+  requirement: ChatResponse["requirement"],
+  value: string
+): ChatResponse["requirement"] {
+  return {
+    ...requirement,
+    preferences: {
+      ...requirement.preferences,
+      features: value
+        .split(/[、,，]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    }
+  };
+}
+
+function formatConfidence(confidence: number | null | undefined): string {
+  if (confidence === undefined || confidence === null) return "待确认";
+  if (confidence >= 0.8) return "高置信度";
+  if (confidence >= 0.55) return "中置信度";
+  return "低置信度，建议修正";
+}
+
 function isPetPreferenceText(text: string): boolean {
   return /可养宠物|可以养宠物|能养宠物|允许养宠物|宠物友好|养猫|养狗|带宠物/.test(text);
 }
@@ -1568,6 +2028,16 @@ function buildPreferenceChips(requirement: ChatResponse["requirement"]): string[
     preferences.minArea ? `${preferences.minArea}平以上` : null,
     preferences.moveInDate ? `${preferences.moveInDate}入住` : null,
     ...preferences.features
+  ].filter((chip): chip is string => Boolean(chip));
+}
+
+function buildCustomerProfileChips(profile: CustomerProfile): string[] {
+  return [
+    profile.budgetSensitive ? "价格敏感" : null,
+    profile.distanceSensitive ? "位置敏感" : null,
+    profile.layoutStrict ? "户型严格" : null,
+    profile.needsImages ? "重视图片" : null,
+    profile.decorationSensitive ? "重视装修" : null
   ].filter((chip): chip is string => Boolean(chip));
 }
 

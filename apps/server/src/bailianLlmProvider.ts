@@ -4,6 +4,7 @@ import {
   type RequirementExtraction,
   validateRequirementExtraction
 } from "@ai-house-assistant/shared";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 import type { AssistantIntent, RequirementExtractionProvider } from "./llmProvider";
 
 type BailianLlmProviderOptions = {
@@ -11,6 +12,7 @@ type BailianLlmProviderOptions = {
   baseUrl: string;
   model: string;
   fetchFn?: typeof fetch;
+  timeoutMs?: number;
 };
 
 type ChatCompletionResponse = {
@@ -26,12 +28,14 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
   private readonly baseUrl: string;
   private readonly model: string;
   private readonly fetchFn: typeof fetch;
+  private readonly timeoutMs: number;
 
   constructor(options: BailianLlmProviderOptions) {
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.model = options.model;
     this.fetchFn = options.fetchFn ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? 15000;
   }
 
   async extractAssistantIntent(input: string): Promise<AssistantIntent> {
@@ -41,16 +45,21 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
         content: [
           "你是内部租房客服助手的意图路由器，只输出 JSON，不输出解释。",
           "根据客服输入判断应该调用哪个能力 intent。",
-          "可选 type：recommend_houses, project_vacancy, area_inventory, metro_line_inventory, metro_station_inventory, area_layout_availability, price_range, distance_ranking。",
+          "可选 type：recommend_houses, project_vacancy, building_detail, area_inventory, feature_inventory, move_in_inventory, payment_inventory, commute_ranking, metro_line_inventory, metro_station_inventory, area_layout_availability, price_range, distance_ranking。",
           "recommend_houses：客户给位置/预算/户型，希望推荐具体房源。",
           "project_vacancy：询问某项目、门店、楼栋还有什么空房。",
           "area_inventory：询问某区域/商圈/地铁站有什么房子/房源/空房，但没有明确户型或预算，例如“永泰有什么房子”。这类先查区域库存概览，不追问预算户型。",
           "metro_line_inventory：询问某条地铁线沿线/沿途/附近房源，例如“3号线沿途的房源”。输出 lineName，例如“3号线”。",
           "metro_station_inventory：询问具体地铁站附近房源，例如“3号线同和站房源”。输出 stationName，例如“同和”；如提到线路则输出 lineName，否则为 null。",
+          "building_detail：询问某项目/楼栋/门店介绍、详情、配置、还有什么户型。",
+          "feature_inventory：询问某区域是否有可养宠、阳台、电梯、近地铁等特征房源。输出 locationKeyword 和 feature。",
+          "move_in_inventory：询问随时入住、近期入住、本周入住等。输出 locationKeyword 和 moveInDate。",
+          "payment_inventory：询问押一付一、月付、押金、付款方式。输出 locationKeyword 和 payment。",
+          "commute_ranking：询问从某区域到某目的地上班/通勤/多久/近不近。输出 locationKeyword 和 destinationKeyword。",
           "area_layout_availability：询问某区域/商圈/街道有没有某户型，例如“花都狮岭有没有一房”。这类不需要预算。",
           "price_range：询问某区域某户型价格范围、租金范围、价位。",
           "distance_ranking：询问离地铁/目标点最近、按距离排序。",
-          "输出字段：type, confidence。project_vacancy 还要 projectName；metro_line_inventory 还要 lineName；metro_station_inventory 还要 stationName,lineName；其他咨询意图要 locationKeyword；涉及户型时输出 layout={bedroom,livingRoom}，未知填 null。"
+          "输出字段：type, confidence。project_vacancy/building_detail 还要 projectName；metro_line_inventory 还要 lineName；metro_station_inventory 还要 stationName,lineName；feature_inventory 还要 locationKeyword,feature；move_in_inventory 还要 locationKeyword,moveInDate；payment_inventory 还要 locationKeyword,payment；commute_ranking 还要 locationKeyword,destinationKeyword；其他咨询意图要 locationKeyword；涉及户型时输出 layout={bedroom,livingRoom}，未知填 null。"
         ].join("\n")
       },
       { role: "user", content: input }
@@ -83,7 +92,7 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
   }
 
   private async chatJson(messages: Array<{ role: "system" | "user"; content: string }>): Promise<string> {
-    const response = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithTimeout(this.fetchFn, `${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
@@ -95,7 +104,7 @@ export class BailianLlmProvider implements RequirementExtractionProvider {
         temperature: 0.1,
         response_format: { type: "json_object" }
       })
-    });
+    }, this.timeoutMs);
 
     if (!response.ok) {
       throw new Error(`Bailian request failed with status ${response.status}`);
@@ -121,6 +130,41 @@ function normalizeAssistantIntent(value: unknown): AssistantIntent {
   };
   if (type === "project_vacancy") {
     return { type, projectName: getString(record.projectName) ?? "", confidence };
+  }
+  if (type === "building_detail") {
+    return { type, projectName: getString(record.projectName) ?? "", confidence };
+  }
+  if (type === "feature_inventory") {
+    return {
+      type,
+      locationKeyword: getString(record.locationKeyword) ?? "",
+      feature: getString(record.feature) ?? "",
+      confidence
+    };
+  }
+  if (type === "move_in_inventory") {
+    return {
+      type,
+      locationKeyword: getString(record.locationKeyword) ?? "",
+      moveInDate: getString(record.moveInDate),
+      confidence
+    };
+  }
+  if (type === "payment_inventory") {
+    return {
+      type,
+      locationKeyword: getString(record.locationKeyword) ?? "",
+      payment: getString(record.payment) ?? "",
+      confidence
+    };
+  }
+  if (type === "commute_ranking") {
+    return {
+      type,
+      locationKeyword: getString(record.locationKeyword) ?? "",
+      destinationKeyword: getString(record.destinationKeyword) ?? "",
+      confidence
+    };
   }
   if (type === "area_inventory") {
     return { type, locationKeyword: getString(record.locationKeyword) ?? "", confidence };

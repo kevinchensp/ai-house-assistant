@@ -7,10 +7,24 @@ type AuthToken = {
   userId: string;
 };
 
-export class AuthService {
-  private readonly tokens = new Map<string, string>();
+type StoredToken = {
+  userId: string;
+  expiresAt: number;
+};
 
-  constructor(private readonly store: JsonAppStore) {}
+type AuthServiceOptions = {
+  tokenTtlMs?: number;
+};
+
+const defaultTokenTtlMs = 8 * 60 * 60 * 1000;
+
+export class AuthService {
+  private readonly tokens = new Map<string, StoredToken>();
+  private readonly tokenTtlMs: number;
+
+  constructor(private readonly store: JsonAppStore, options: AuthServiceOptions = {}) {
+    this.tokenTtlMs = options.tokenTtlMs ?? defaultTokenTtlMs;
+  }
 
   async login(phone: string, password: string): Promise<AuthToken & { user: PublicUser }> {
     const user = await this.store.findUserByPhone(phone);
@@ -21,15 +35,30 @@ export class AuthService {
     }
 
     const token = crypto.randomUUID();
-    this.tokens.set(token, user.id);
+    this.tokens.set(token, { userId: user.id, expiresAt: Date.now() + this.tokenTtlMs });
     return { token, userId: user.id, user: toPublicUser(user) };
   }
 
   getUserIdFromRequest(request: express.Request): string | null {
     const authorization = request.header("authorization") ?? "";
+    return this.getUserIdFromAuthorization(authorization);
+  }
+
+  getUserIdFromAuthorization(authorization: string): string | null {
     const match = authorization.match(/^Bearer\s+(.+)$/i);
     if (!match?.[1]) return null;
-    return this.tokens.get(match[1]) ?? null;
+    const token = match[1];
+    const storedToken = this.tokens.get(token);
+    if (!storedToken) return null;
+    if (storedToken.expiresAt <= Date.now()) {
+      this.tokens.delete(token);
+      return null;
+    }
+    return storedToken.userId;
+  }
+
+  logout(token: string): void {
+    this.tokens.delete(token);
   }
 }
 

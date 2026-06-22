@@ -34,7 +34,12 @@ COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 
-RUN mkdir -p /data
+RUN addgroup -S app \
+  && adduser -S app -G app \
+  && mkdir -p /data \
+  && chown -R app:app /app /data
+
+USER app
 
 EXPOSE 3101
 CMD ["npm", "run", "start", "--workspace", "@ai-house-assistant/server"]
