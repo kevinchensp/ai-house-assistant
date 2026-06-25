@@ -10,6 +10,8 @@
   "scripts": {
     "dev": "npm run dev --workspace @ai-house-assistant/server",
     "dev:web": "npm run dev --workspace @ai-house-assistant/web",
+    "mcp:local": "node scripts/switch-mcp.mjs local",
+    "mcp:remote": "node scripts/switch-mcp.mjs remote",
     "build": "npm run build --workspace @ai-house-assistant/shared && npm run build --workspace @ai-house-assistant/server && npm run build --workspace @ai-house-assistant/web",
     "test": "vitest run",
     "typecheck": "tsc -b"

@@ -58,6 +58,10 @@ cp .env.example .env
 ```text
 MCP_SERVER_URL=http://8.134.48.145:3100/mcp
 MCP_AUTH_TOKEN=replace-with-server-token
+MCP_LOCAL_SERVER_URL=http://127.0.0.1:3100/mcp
+MCP_LOCAL_AUTH_TOKEN=replace-with-local-token
+MCP_REMOTE_SERVER_URL=http://8.134.48.145:3100/mcp
+MCP_REMOTE_AUTH_TOKEN=replace-with-remote-token
 ADMIN_INITIAL_PASSWORD=replace-with-initial-admin-password
 BAILIAN_API_KEY=replace-with-bailian-api-key
 BAILIAN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -77,6 +81,15 @@ AMAP_CITY=广州
 ```
 
 不要把 `.env` 提交到仓库。
+
+本地和线上 MCP 可以快速切换，脚本会读取 `.env` 里的 `MCP_LOCAL_*` 或 `MCP_REMOTE_*`，并写回当前生效的 `MCP_SERVER_URL`、`MCP_AUTH_TOKEN`：
+
+```bash
+npm run mcp:local
+npm run mcp:remote
+```
+
+切换后需要重启后端服务，已运行的 Node 进程不会自动重新读取 `.env`。
 
 高德配置说明：
 
